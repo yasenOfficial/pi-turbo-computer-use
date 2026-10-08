@@ -1,131 +1,171 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext, BeforeAgentStartEvent, ModelRouteRequest } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext, BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
 import type { Model } from "@earendil-works/pi-ai";
 import type { ComputerUseMode } from "./mode.js";
 
-const PROVIDER = "computer-use";
-const ID = "sol-luna";
 const PREF = "computer-use-routing-preference-v1";
 const TASK = "computer-use-routing-task-v1";
 const SECTION = "computer_use_routing";
-const STATUS = "computer-use-routing";
 type Ref = { provider: string; id: string };
 type Phase = "plan" | "execute" | "escalated";
 type Task = { id: string; phase: Phase; active: boolean; disabled?: boolean };
-type State = { taskId: string; phase: Phase };
 type Preference = { hybrid: boolean; sol?: Ref; luna?: Ref; original?: Ref };
-const isRef = (value: any): value is Ref => Boolean(value && typeof value.provider === "string" && value.provider && typeof value.id === "string" && value.id);
 const ref = (model: Model<any>): Ref => ({ provider: model.provider, id: model.id });
-const same = (a: Ref | undefined, b: Ref | undefined): boolean => !!a && !!b && a.provider === b.provider && a.id === b.id;
-const virtual = (model: Model<any> | undefined): boolean => model?.provider === PROVIDER && model.id === ID;
-/** Compare numeric version segments before the role; absent segments count as zero. */
-function compareVersions(a: Model<any>, b: Model<any>): number {
-	const numbers = (id: string) => (id.replace(/-(sol|luna)$/, "").match(/\d+/g) ?? []).map(Number);
-	const aa = numbers(a.id), bb = numbers(b.id);
-	for (let i = 0; i < Math.max(aa.length, bb.length); i++) {
-		const diff = (aa[i] ?? 0) - (bb[i] ?? 0);
-		if (diff) return diff;
-	}
-	return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
-}
+const same = (a?: Ref, b?: Ref): boolean => !!a && !!b && a.provider === b.provider && a.id === b.id;
+const isRef = (value: any): value is Ref => !!value && typeof value.provider === "string" && !!value.provider && typeof value.id === "string" && !!value.id;
+const oldVirtual = (model?: Model<any>): boolean => model?.provider === "computer-use" && model.id === "sol-luna";
 function newest(models: Model<any>[]): Model<any> | undefined {
-	return models.reduce<Model<any> | undefined>((best, model) => !best || compareVersions(model, best) > 0 ? model : best, undefined);
+	const version = (id: string) => (id.replace(/-(sol|luna)$/, "").match(/\d+/g) ?? []).map(Number);
+	return models.reduce<Model<any> | undefined>((best, model) => {
+		if (!best) return model;
+		const a = version(model.id), b = version(best.id);
+		for (let i = 0; i < Math.max(a.length, b.length); i++) {
+			if ((a[i] ?? 0) !== (b[i] ?? 0)) return (a[i] ?? 0) > (b[i] ?? 0) ? model : best;
+		}
+		return model.id > best.id ? model : best;
+	}, undefined);
 }
 
-/** Same native Pi turn; no nested model invocation or background work. */
+/** Physical model handoffs in the host's native agent loop; no virtual footer or nested model. */
 export class ComputerUseRouting {
 	private preference: Preference = { hybrid: false };
 	private task?: Task;
-	private dispatched?: Ref;
+	private owned?: Ref;
+	private expected?: Ref;
+	private switching = false;
 	private mixedCallIds = new Set<string>();
 	constructor(private readonly pi: ExtensionAPI, private readonly mode: ComputerUseMode) {
-		if (typeof pi.registerVirtualModel === "function") pi.registerVirtualModel<State>({ provider: PROVIDER, id: ID, name: "Computer use · Sol → Luna", thinkingLevels: ["off", "low", "medium", "high", "xhigh"],
-			route: (request, ctx) => this.route(request, ctx),
-		});
 		pi.registerTool({ name: "desktop_model_phase", label: "Computer use · model handoff", exposure: "model-only",
-			description: "In hybrid desktop tasks only: Sol passes a bounded plan to Luna with phase execute; Luna may request one Sol escalation with a reason and current verified state. No desktop action; call alone, never in a batch with other tools. No escalation on tool error or retry.",
+			description: "Sol hands a bounded plan to Luna alone; Luna may escalate one verified blocker to Sol alone. Never batch with other tools, escalate on a tool error, or repeat uncertain input.",
 			parameters: Type.Object({ phase: Type.Union([Type.Literal("execute"), Type.Literal("escalate")]),
 				plan: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
 				reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
 				verified_state: Type.Optional(Type.String({ minLength: 1, maxLength: 2000 })),
 			}, { additionalProperties: false }),
-			execute: async (_id, input, signal, _onUpdate, ctx) => {
+			execute: async (_id, input, signal, _update, ctx) => {
 				if (signal?.aborted || ctx.signal?.aborted) throw new Error("Computer-use routing cancelled");
-				if (!mode.isEnabled()) throw new Error("Computer use is OFF; desktop_model_phase is unavailable");
-				if (mode.isWaitingForUser()) throw new Error("Action required: wait for the user's reply");
-				if (!virtual(ctx.model) || !this.preference.hybrid || !this.task?.active) throw new Error("No active hybrid desktop task");
+				if (!this.mode.isEnabled()) throw new Error("Computer use is OFF");
+				if (this.mode.isWaitingForUser()) throw new Error("Action required: wait for the user's reply");
+				const task = this.task;
+				if (!this.preference.hybrid || !task?.active || task.disabled || this.switching) throw new Error("No active hybrid desktop task or model switch in progress");
+				const from = input.phase === "execute" ? this.preference.sol : this.preference.luna;
+				const to = input.phase === "execute" ? this.preference.luna : this.preference.sol;
 				const expected = input.phase === "execute" ? "plan" : "execute";
-				const physical = input.phase === "execute" ? this.preference.sol : this.preference.luna;
-				if (this.task.phase !== expected || !same(this.dispatched, physical)) throw new Error("Wrong model or phase for desktop_model_phase; no transition performed");
+				if (task.phase !== expected || !same(ctx.model ? ref(ctx.model) : undefined, from) || !same(this.owned, from)) throw new Error("Wrong physical model or phase; no handoff performed");
 				if (input.phase === "execute" && (!input.plan?.trim() || input.reason || input.verified_state)) throw new Error("Sol handoff requires a bounded plan only");
 				if (input.phase === "escalate" && (!input.reason?.trim() || !input.verified_state?.trim() || input.plan)) throw new Error("Escalation requires a reason and current verified state, not a plan");
-				// A tool error alone is never evidence for escalation. Only an explicit verified blocker is.
-				if (input.phase === "escalate" && !input.verified_state.trim()) throw new Error("Re-observe and verify current state before escalating");
-				const phase = input.phase === "execute" ? "execute" : "escalated";
-				this.task = { ...this.task, phase };
-				pi.appendEntry(TASK, this.task);
-				this.status(ctx);
+				await this.switchTo(ctx, to, task.id, signal);
+				// No state transition on a failed/uncertain model switch, abort, OFF, or manual override.
+				if (this.task !== task || !task.active || task.disabled || !this.mode.isEnabled() || signal?.aborted || ctx.signal?.aborted) {
+					this.deactivate(ctx, true);
+					throw new Error("Model changed but task was cancelled or disabled; do not replay input");
+				}
+				const phase: Phase = input.phase === "execute" ? "execute" : "escalated";
+				this.task = { ...task, phase };
+				this.pi.appendEntry(TASK, this.task);
+				this.label(ctx);
 				return { content: [{ type: "text", text: input.phase === "execute"
-					? `Handoff accepted. Next native request routes to Luna. Plan: ${input.plan.trim()}`
-					: `One escalation accepted. Next native request routes to Sol; remain on Sol for this task. Reason: ${input.reason.trim()}. Verified state: ${input.verified_state.trim()}` }], details: { phase } };
+					? `Next native request uses Luna. Plan: ${input.plan.trim()}`
+					: `Next native request uses Sol; stay on Sol. Reason: ${input.reason.trim()}. Verified: ${input.verified_state.trim()}` }], details: { phase } };
 			},
 		});
 		pi.on("message_end", (event) => {
 			if (event.message.role !== "assistant") return;
 			this.mixedCallIds.clear();
-			const calls = event.message.content.filter((part) => part.type === "toolCall");
-			if (calls.some((call) => call.name === "desktop_model_phase") && calls.length !== 1)
+			const calls = event.message.content.filter(part => part.type === "toolCall");
+			if (calls.length > 1 && calls.some(call => call.name === "desktop_model_phase"))
 				for (const call of calls) this.mixedCallIds.add(call.id);
 		});
 		pi.on("tool_call", (event, ctx) => this.guard(event, ctx));
 		pi.on("model_select", (event, ctx) => {
-			if (this.task?.active && virtual(event.previousModel) && !virtual(event.model)) this.deactivate(ctx, true);
+			if (this.expected && same(this.expected, ref(event.model))) return;
+			if (this.task?.active) this.deactivate(ctx, true);
+			// User-selected physical models set the account for the next task; never switch it back.
+			this.owned = undefined;
+			if (event.model && !oldVirtual(event.model) && !this.task?.active) {
+				this.preference.original = ref(event.model);
+				if (this.preference.hybrid) {
+					try { Object.assign(this.preference, this.choose(ctx, event.model)); }
+					catch { this.preference.sol = undefined; this.preference.luna = undefined; }
+				}
+				this.pi.appendEntry(PREF, this.preference);
+				this.label(ctx);
+			}
 		});
-		pi.on("agent_settled", (_event, ctx) => {
+		pi.on("agent_settled", async (_event, ctx) => {
+			const task = this.task;
+			// Stop/abort disables input, not ownership of the physical model. A manual
+			// selection clears owned in model_select and must never be overwritten here.
+			const restore = this.owned && same(ctx.model ? ref(ctx.model) : undefined, this.owned) ? this.preference.original : undefined;
 			this.deactivate(ctx);
-			this.dispatched = undefined;
+			if (restore && !same(ctx.model ? ref(ctx.model) : undefined, restore) && this.task?.id === task?.id) {
+				try { await this.switchTo(ctx, restore, undefined, undefined, true); }
+				catch { this.deactivate(ctx, true); } // No automatic retry of an uncertain switch.
+			}
+			this.owned = undefined;
 			this.mixedCallIds.clear();
-			this.status(ctx);
+			this.label(ctx);
 		});
-		pi.on("session_shutdown", (_event, ctx) => { this.dispatched = undefined; this.task = undefined; this.clear(ctx); });
+		pi.on("session_shutdown", (_event, ctx) => { this.task = undefined; this.owned = undefined; this.mode.setRoutingLabel(undefined, ctx); });
 	}
 
 	private available(ctx: ExtensionContext): Model<any>[] {
-		return ctx.modelRegistry.getAvailable().filter((m) => m.api !== "pi-virtual" && !virtual(m));
+		return ctx.modelRegistry.getAvailable().filter(m => m.api !== "pi-virtual");
 	}
-	private resolve(ctx: ExtensionContext, target: Ref | undefined, label: string): Model<any> {
-		if (!target) throw new Error(`No saved ${label} model for this account; check /model or /login in the normal Pi UI`);
-		const model = this.available(ctx).find((m) => same(ref(m), target));
-		if (!model) throw new Error(`${label} ${target.provider}/${target.id} is no longer available on this account; check /model or /login in the normal Pi UI`);
-		return model;
+	private resolve(ctx: ExtensionContext, target: Ref | undefined, role: string): Model<any> {
+		if (!target) throw new Error(`No saved ${role} physical model; choose an authenticated model in /model`);
+		const found = this.available(ctx).find(m => same(ref(m), target));
+		if (!found) throw new Error(`${role} ${target.provider}/${target.id} unavailable on this account; check /model or /login in Pi`);
+		return found;
 	}
-	/** Discover only within the selected physical model's provider (the active account). */
 	private choose(ctx: ExtensionContext, original: Model<any>): { sol: Ref; luna: Ref } {
 		const models = this.available(ctx).filter(m => m.provider === original.provider);
 		const sol = /-sol$/.test(original.id) ? original : newest(models.filter(m => /-sol$/.test(m.id)));
-		if (!sol) throw new Error(`No authenticated Sol model on current account ${original.provider}; check /model or /login in the normal Pi UI`);
-		const paired = models.find(m => m.id === sol.id.replace(/-sol$/, "-luna"));
-		const luna = paired ?? newest(models.filter(m => /-luna$/.test(m.id)));
-		if (!luna) throw new Error(`No authenticated Luna model on current account ${original.provider}; check /model or /login in the normal Pi UI`);
+		if (!sol) throw new Error(`No authenticated Sol on current account ${original.provider}; check /model or /login`);
+		const luna = models.find(m => m.id === sol.id.replace(/-sol$/, "-luna")) ?? newest(models.filter(m => /-luna$/.test(m.id)));
+		if (!luna) throw new Error(`No authenticated Luna on current account ${original.provider}; check /model or /login`);
 		return { sol: ref(sol), luna: ref(luna) };
 	}
-	private persist(): void { this.pi.appendEntry(PREF, this.preference); }
-	private status(ctx: ExtensionContext): void {
-		if (ctx.hasUI) ctx.ui.setStatus(STATUS, this.preference.hybrid && virtual(ctx.model)
-			? `Hybrid ${this.task?.active ? this.task.phase : "idle"} · Sol → Luna${this.task?.phase === "escalated" ? " → Sol" : ""}` : undefined);
+	/** Refresh the existing above-editor mode bar after an explicit ON/OFF toggle. */
+	refreshLabel(ctx: ExtensionContext): void { this.label(ctx); }
+	private label(ctx: ExtensionContext): void {
+		const p = this.preference;
+		const ids = p.hybrid ? p.sol && p.luna ? `${p.sol.id} → ${p.luna.id}` : "Sol → Luna"
+			: `single · ${ctx.model?.id ?? "unknown"}`;
+		const phase = this.task?.active ? this.task.phase === "plan" ? " · план: Sol"
+			: this.task.phase === "execute" ? " · изпълнява: Luna" : " · блокаж: Sol" : "";
+		this.mode.setRoutingLabel(this.mode.isEnabled() ? ids + phase : undefined, ctx);
 	}
-	private clear(ctx: ExtensionContext): void { if (ctx.hasUI) ctx.ui.setStatus(STATUS, undefined); }
 	private deactivate(ctx: ExtensionContext, disabled = false): void {
 		if (!this.task?.active) return;
 		this.task = { ...this.task, active: false, disabled };
 		this.pi.appendEntry(TASK, this.task);
-		this.status(ctx);
+		this.label(ctx);
 	}
-	start(ctx: ExtensionContext): void {
+	private async switchTo(ctx: ExtensionContext, target: Ref | undefined, taskId?: string, signal?: AbortSignal,
+		restoreAtSettlement = false): Promise<void> {
+		if (this.switching) throw new Error("Model switch already in progress");
+		// Settlement only restores Pi's selected model metadata; it performs no desktop
+		// input or agent request. Allow that cleanup even after the run signal aborts.
+		if (signal?.aborted || (ctx.signal?.aborted && !restoreAtSettlement)) throw new Error("Computer-use routing cancelled");
+		if (taskId && (!this.mode.isEnabled() || !this.task?.active || this.task.id !== taskId)) throw new Error("Hybrid task is no longer active");
+		const model = this.resolve(ctx, target, "target");
+		if (same(ctx.model ? ref(ctx.model) : undefined, ref(model))) { if (taskId) this.owned = ref(model); return; }
+		this.switching = true;
+		this.expected = ref(model);
+		try {
+			if (!await this.pi.setModel(model)) throw new Error(`Unable to select ${model.provider}/${model.id}; check /model or /login`);
+			if (!same(ctx.model ? ref(ctx.model) : undefined, ref(model))) throw new Error("Physical model changed during handoff; do not retry uncertain input");
+			if (taskId) this.owned = ref(model);
+		} finally { this.expected = undefined; this.switching = false; }
+	}
+	/** Restore branch metadata only; migrate a leftover old virtual selection to its saved physical model. */
+	async start(ctx: ExtensionContext): Promise<void> {
 		this.preference = { hybrid: false };
 		this.task = undefined;
-		this.dispatched = undefined;
+		this.owned = undefined;
+		this.mixedCallIds.clear();
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === PREF) {
 				const p = entry.data as Preference;
@@ -136,114 +176,92 @@ export class ComputerUseRouting {
 				if (typeof t?.id === "string" && ["plan", "execute", "escalated"].includes(t.phase) && typeof t.active === "boolean") this.task = t;
 			}
 		}
-		this.status(ctx);
+		if (oldVirtual(ctx.model)) await this.switchTo(ctx, this.preference.original);
+		if (ctx.model && !oldVirtual(ctx.model) && !this.task?.active) this.preference.original = ref(ctx.model);
+		if (this.task?.active) {
+			const target = this.task.phase === "execute" ? this.preference.luna : this.preference.sol;
+			if (target && same(ctx.model ? ref(ctx.model) : undefined, target)) this.owned = target;
+			else this.deactivate(ctx, true);
+		}
+		this.label(ctx);
 	}
-	/** Read-only summary for the parent command's bare `models` case. */
 	summary(ctx: ExtensionContext): string {
-		const provider = virtual(ctx.model) ? this.preference.original?.provider : ctx.model?.provider;
-		const display = (target?: Ref) => target ? `${target.provider}/${target.id}` : "not selected";
-		return `Models: ${this.preference.hybrid ? "hybrid" : "single"}${typeof this.pi.registerVirtualModel !== "function" ? " (hybrid requires a newer Pi SDK)" : ""}; current account ${provider ?? "unknown"}; Sol ${display(this.preference.sol)}; Luna ${display(this.preference.luna)}; dispatched ${display(this.dispatched)}; phase ${this.task?.active ? this.task.phase : "idle"}. Use /computer-use models hybrid or single.`;
+		const p = this.preference;
+		return `Models: ${p.hybrid ? "hybrid" : "single"}; account ${ctx.model?.provider ?? "unknown"}; Sol ${p.sol?.id ?? "not selected"}; Luna ${p.luna?.id ?? "not selected"}; current ${ctx.model?.id ?? "unknown"}; phase ${this.task?.active ? this.task.phase : "idle"}. Use /computer-use models hybrid or single.`;
 	}
-	/** Only explicit mode selection; parent handles bare `models` with summary(ctx). */
 	async command(args: string, ctx: ExtensionContext): Promise<string> {
 		const text = args.trim();
 		if (text === "hybrid") {
-			if (typeof this.pi.registerVirtualModel !== "function") throw new Error("Computer-use hybrid requires a Pi SDK with registerVirtualModel (docs/virtual-models.md); upgrade Pi or use models single.");
-			const original = virtual(ctx.model) ? this.preference.original : ctx.model ? ref(ctx.model) : undefined;
-			if (!original) throw new Error("Select an authenticated physical model in /model before enabling hybrid");
-			const physical = this.resolve(ctx, original, "original");
-			const selected = this.choose(ctx, physical); // Always recompute; ignore saved targets when the account changes.
-			const vm = ctx.modelRegistry.find(PROVIDER, ID);
-			if (!vm) throw new Error("Virtual model computer-use/sol-luna is not registered; reload with a compatible Pi SDK");
-			if (!await this.pi.setModel(vm)) throw new Error("Unable to select computer-use/sol-luna; check SDK model availability");
-			this.preference = { ...selected, original, hybrid: true }; this.persist(); this.status(ctx);
-			return "Hybrid selected: computer-use/sol-luna (visible in /model).";
+			if (this.task?.active) throw new Error("Wait for the active task to settle before changing routing");
+			const physical = this.resolve(ctx, ctx.model && !oldVirtual(ctx.model) ? ref(ctx.model) : this.preference.original, "current");
+			const selected = this.choose(ctx, physical);
+			this.preference = { hybrid: true, original: ref(physical), ...selected };
+			this.pi.appendEntry(PREF, this.preference);
+			this.label(ctx);
+			return "Hybrid ready on current account; physical /model selection unchanged.";
 		}
 		if (text === "single") {
-			if (virtual(ctx.model)) {
-				const original = this.resolve(ctx, this.preference.original, "original");
-				if (!await this.pi.setModel(original)) throw new Error("Cannot restore original physical model; hybrid selection unchanged");
-			}
-			this.preference = { ...this.preference, hybrid: false }; this.task = undefined; this.persist(); this.clear(ctx);
-			return "Single physical model selected; hybrid routing disabled.";
+			if (this.task?.active) throw new Error("Wait for the active task to settle before changing routing");
+			this.preference = { ...this.preference, hybrid: false };
+			this.pi.appendEntry(PREF, this.preference);
+			this.label(ctx);
+			return "Single physical model; current /model selection unchanged.";
 		}
 		throw new Error("Usage: models hybrid|single (bare models shows the summary)");
 	}
-	beforeStart(event: BeforeAgentStartEvent, ctx: ExtensionContext): void {
-		this.dispatched = undefined;
+	/** Called after mode.beforeStart and awaited before the native run begins. */
+	async beforeStart(event: BeforeAgentStartEvent, ctx: ExtensionContext): Promise<void> {
 		this.mixedCallIds.clear();
-		const active = this.preference.hybrid && virtual(ctx.model) && this.mode.isEnabled();
-		this.task = { id: randomUUID(), phase: "plan", active: Boolean(active) };
-		this.pi.appendEntry(TASK, this.task);
+		this.owned = undefined;
+		const active = this.preference.hybrid && this.mode.isEnabled();
+		const selected = ctx.model && !oldVirtual(ctx.model) ? ref(ctx.model) : this.preference.original;
+		if (selected) this.preference.original = selected;
+		const task: Task = { id: randomUUID(), phase: "plan", active };
+		this.task = task;
+		this.pi.appendEntry(TASK, task);
 		if (active) {
-			const original = this.resolve(ctx, this.preference.original, "original");
-			if (!this.preference.sol || !this.preference.luna || this.preference.sol.provider !== original.provider ||
-				this.preference.luna.provider !== original.provider) throw new Error("Saved Sol/Luna targets do not match the selected account; choose /computer-use models hybrid again");
-			this.resolve(ctx, this.preference.sol, "sol");
-			this.resolve(ctx, this.preference.luna, "luna"); // No automatic provider/account switch.
-			event.systemPromptOptions.sections[SECTION] = "Hybrid desktop task: Sol plans using semantic inspection only (focus_window is permitted for inspection). Sol must call desktop_model_phase({phase:'execute',plan}) alone to hand off; Luna executes and verifies. Luna may call desktop_model_phase({phase:'escalate',reason,verified_state}) alone at most once after re-observing a verified blocker, not on a tool error/retry. Sol then remains responsible; never repeat uncertain input. No parallel companion desktop actions. Both models obey the computer-use rules in the mode section. desktop_visual_permission is an orchestration tool, not physical desktop input.";
-		} else delete event.systemPromptOptions.sections[SECTION];
-		this.status(ctx);
-	}
-	private route(request: ModelRouteRequest<State>, ctx: ExtensionContext) {
-		if (request.signal?.aborted) throw new Error("Computer-use routing cancelled");
-		const task = this.task;
-		if (request.reason === "direct") {
-			const target = (request.previous && this.available(ctx).find(m => same(ref(m), ref(request.previous!.model))))
-				?? this.resolve(ctx, this.dispatched ?? this.preference.original ?? this.preference.sol, "direct");
-			return { model: target, thinkingLevel: request.thinkingLevel };
-		}
-		if (task?.disabled && request.reason !== "user") throw new Error("Computer-use routing disabled for this task. Start a new user task to resume.");
-		if (task?.active && !this.mode.isEnabled()) throw new Error("Computer use is OFF; routing cannot continue this task");
-		if (!this.preference.hybrid || !task?.active) {
-			const model = this.resolve(ctx, this.preference.original, "original");
-			this.dispatched = ref(model);
-			return { model, thinkingLevel: request.thinkingLevel };
-		}
-		// The request state is branch-local and durable across compaction. The task entry
-		// records tool handoffs before Pi's next route and resets on each user prompt.
-		const phase = task.phase;
-		const chosen = phase === "execute" ? this.preference.luna : this.preference.sol;
-		const model = this.resolve(ctx, chosen, phase === "execute" ? "luna" : "sol");
-		if (request.reason === "retry") {
-			const sticky = request.failed ?? request.previous;
-			if (sticky && !same(ref(sticky.model), ref(model))) {
-				// Never treat a failed model request as a handoff or a reason to escalate.
-				const failed = this.resolve(ctx, ref(sticky.model), "retry");
-				this.dispatched = ref(failed);
-				return { model: failed, thinkingLevel: sticky.thinkingLevel ?? request.thinkingLevel, state: request.state };
+			try {
+				const original = this.resolve(ctx, selected, "current");
+				const targets = this.choose(ctx, original); // New user task may use a newly selected account.
+				this.preference = { ...this.preference, original: ref(original), ...targets };
+				this.pi.appendEntry(PREF, this.preference);
+				await this.switchTo(ctx, targets.sol, task.id);
+				if (this.task !== task || !this.mode.isEnabled() || ctx.signal?.aborted) throw new Error("Hybrid task cancelled before planning");
+				event.systemPromptOptions.sections[SECTION] = "Hybrid desktop task: Sol plans with semantic inspection only; call desktop_model_phase({phase:'execute',plan}) alone for Luna to execute. Luna may escalate one re-observed verified blocker via desktop_model_phase({phase:'escalate',reason,verified_state}) alone. No automatic escalation on errors or repeat of uncertain input. Both models follow the computer-use mode rules. desktop_visual_permission is orchestration, not desktop input.";
+			} catch (error) {
+				this.deactivate(ctx, true);
+				if (ctx.signal?.aborted) return; // User abort is notification-silent.
+				const reason = error instanceof Error && /^No authenticated (Sol|Luna) on current account /.test(error.message)
+					? error.message : "Hybrid model selection failed on the current account; check /model or /login in Pi";
+				event.systemPromptOptions.sections[SECTION] = `Hybrid model selection failed: ${reason}. No desktop action permitted. Explain the missing model; do not call desktop tools or silently fall back to another account.`;
+				if (ctx.hasUI) ctx.ui.notify(reason, "warning");
+				this.label(ctx);
+				return; // Pi reports handler exceptions but still starts the agent; fail closed in tool_call.
 			}
+		} else {
+			delete event.systemPromptOptions.sections[SECTION];
+			if (oldVirtual(ctx.model)) await this.switchTo(ctx, this.preference.original);
+			// OFF does not change an already selected physical model or start desktop work.
 		}
-		if (request.reason === "continuation" && !same(ref(model), this.dispatched) && this.dispatched &&
-			!((phase === "execute" && same(this.dispatched, this.preference.sol)) || (phase === "escalated" && same(this.dispatched, this.preference.luna))))
-			throw new Error("Physical model changed midtask; routing disabled until a new task");
-		this.dispatched = ref(model);
-		return { model, thinkingLevel: request.thinkingLevel,
-			state: request.state?.taskId === task.id && request.state.phase === phase ? request.state : { taskId: task.id, phase } };
+		this.label(ctx);
 	}
-	/** Optional parent hook if its own tool-call registration order needs an explicit guard. */
-	guard(event: { toolName: string; toolCallId?: string; input?: unknown }, ctx: ExtensionContext): { block: true; reason: string } | undefined {
-		if (this.task?.disabled && event.toolName.startsWith("desktop_") &&
-			!["desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName))
+	guard(event: { toolName: string; toolCallId?: string }, ctx: ExtensionContext): { block: true; reason: string } | undefined {
+		if (event.toolName === "desktop_stop" && this.task?.active) { this.deactivate(ctx, true); return; }
+		if (this.task?.disabled && event.toolName.startsWith("desktop_") && !["desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName))
 			return { block: true, reason: "Computer-use routing disabled for this task; wait for a new user request" };
-		if (!this.preference.hybrid || !this.task?.active) return;
-		if (event.toolName === "desktop_stop") { this.deactivate(ctx, true); return; }
-		if (!this.mode.isEnabled() && event.toolName.startsWith("desktop_") &&
-			!["desktop_ping", "desktop_metrics"].includes(event.toolName))
+		if (!this.mode.isEnabled() && event.toolName.startsWith("desktop_") && !["desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName))
 			return { block: true, reason: "Computer use is OFF" };
-		if (!virtual(ctx.model) && event.toolName.startsWith("desktop_") && event.toolName !== "desktop_stop") {
+		if (!this.preference.hybrid || !this.task?.active) return;
+		if (this.switching && event.toolName.startsWith("desktop_")) return { block: true, reason: "Model handoff in progress; no companion desktop actions" };
+		if (event.toolCallId && this.mixedCallIds.has(event.toolCallId)) return { block: true, reason: "desktop_model_phase must be the only tool call in its message" };
+		if (ctx.signal?.aborted || this.mode.isWaitingForUser()) return { block: true, reason: "Computer-use task cancelled or waiting for user" };
+		const expected = this.task.phase === "execute" ? this.preference.luna : this.preference.sol;
+		if (!same(ctx.model ? ref(ctx.model) : undefined, expected) || !same(this.owned, expected)) {
 			this.deactivate(ctx, true);
 			return { block: true, reason: "Physical model changed midtask; desktop routing disabled" };
 		}
-		if (!virtual(ctx.model)) return;
-		if (event.toolCallId && this.mixedCallIds.has(event.toolCallId)) return { block: true, reason: "desktop_model_phase must be the only tool call in its assistant message" };
-		if (ctx.signal?.aborted) return { block: true, reason: "Computer-use routing cancelled" };
-		if (this.mode.isWaitingForUser() && event.toolName !== "desktop_stop") return { block: true, reason: "Action required: wait for the user's reply" };
 		if (event.toolName === "desktop_model_phase") return;
-		if (!event.toolName.startsWith("desktop_") || ["desktop_focus_window", "desktop_observe", "desktop_inspect", "desktop_search_seen", "desktop_changes", "desktop_dirty_regions", "desktop_wait", "desktop_ping", "desktop_metrics", "desktop_stop", "desktop_request_user", "desktop_visual_permission", "desktop_screenshot", "desktop_inspect_visual"].includes(event.toolName)) return;
-		if (this.task.phase === "plan" || (this.task.phase === "execute" && !same(this.dispatched, this.preference.luna))) {
-			return { block: true, reason: "Planning cannot mutate the desktop; hand off a plan to Luna alone first" };
-		}
-		if (this.task.phase === "escalated" && !same(this.dispatched, this.preference.sol)) return { block: true, reason: "Escalation handoff pending; no companion desktop actions" };
+		if (!event.toolName.startsWith("desktop_") || ["desktop_focus_window", "desktop_observe", "desktop_inspect", "desktop_search_seen", "desktop_changes", "desktop_dirty_regions", "desktop_wait", "desktop_ping", "desktop_metrics", "desktop_request_user", "desktop_visual_permission", "desktop_screenshot", "desktop_inspect_visual"].includes(event.toolName)) return;
+		if (this.task.phase === "plan") return { block: true, reason: "Sol planning cannot mutate the desktop; hand off a plan alone first" };
 	}
 }

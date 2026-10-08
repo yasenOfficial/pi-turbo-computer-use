@@ -50,6 +50,7 @@ export class ComputerUseMode {
 	private notificationWarningShown = false;
 	private lastTiming?: Timing;
 	private ticker?: ReturnType<typeof setInterval>;
+	private routingLabel?: string;
 	constructor(private readonly pi: ExtensionAPI,
 		private readonly notify = sendDesktopCompletion,
 		private readonly timer: TimerRuntime = { now: () => performance.now(), setInterval, clearInterval }) {
@@ -63,10 +64,16 @@ export class ComputerUseMode {
 
 	isEnabled(): boolean { return this.enabled; }
 
+	/** Routing belongs beside Computer use ON, never in Pi's standard footer. */
+	setRoutingLabel(label: string | undefined, ctx: ExtensionContext): void {
+		this.routingLabel = label;
+		this.render(ctx);
+	}
+
 	private render(ctx: ExtensionContext): void {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		ctx.ui.setWidget(WIDGET, this.enabled ? (_tui, theme) => ({
-			render: (width: number) => [theme.fg("accent", computerUseBar(width, this.timingSuffix()))],
+			render: (width: number) => [theme.fg("accent", computerUseBar(width, `${this.routingLabel ? ` · ${this.routingLabel}` : ""}${this.timingSuffix()}`))],
 			invalidate() {},
 		}) : undefined, { placement: "aboveEditor" });
 	}
@@ -80,6 +87,7 @@ export class ComputerUseMode {
 		this.discard();
 		this.enabled = false;
 		this.lastTiming = undefined;
+		this.routingLabel = undefined;
 		for (const entry of ctx.sessionManager.getBranch()) {
 			if (entry.type === "custom" && entry.customType === ENTRY) {
 				const data = entry.data as { enabled?: unknown } | undefined;

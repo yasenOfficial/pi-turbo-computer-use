@@ -9,7 +9,7 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 - **24 model-facing tools:** semantic observe/diffs/inspection, UI history search, verified focus, native GIO app launch, text, input, batches, waits, bounded captures, dirty rectangles, metrics, emergency Stop, user handoff, single-use visual permission, and model-phase handoff.
 - Optional **visible Sol → Luna routing in the same session**: Sol plans, Luna executes, and one explicit difficult-blocker escalation returns to Sol. No nested model or classifier calls.
 - `/computer-use on`, `off`, and `toggle`. **OFF blocks desktop observation and actions**, including task submission; only emergency Stop and metadata-only ping/metrics remain available. OFF at fresh Pi startup; `/reload` preserves the chosen mode.
-- An ON bar with a live whole-run timer and the last duration. Toggle/timing state is session-local; the physical desktop and emergency Stop are shared across sessions.
+- An ON bar with hybrid/single model information, current phase, a live whole-run timer and last duration. Routing information is visible **only beside Computer use ON**, not as a virtual model in Pi's standard footer. Toggle/timing state is session-local; the physical desktop and emergency Stop are shared.
 - Breathing blue screen-edge light and a smooth cursor-following halo during desktop work **including model thinking**, with expiring workflow leases and capture suspension.
 - Lazy daemon startup and safety/version validation before UI calls. Authenticated, idle, extension-owned daemons can upgrade gracefully; arbitrary or emergency-stopped processes are never forcibly replaced.
 - **Action required** handoff for MFA/2FA, CAPTCHA, missing/ambiguous login, approval, or a genuine technical blocker. Generic OS notifications contain no task text or credentials. User abort/Stop is silent.
@@ -70,7 +70,7 @@ Optional foreground start for diagnostics:
 /computer-use toggle                Toggle mode
 /computer-use <task>                Submit a task in this session (requires ON)
 /computer-use models hybrid         Select visible Sol → Luna routing
-/computer-use models single         Restore your original physical model
+/computer-use models single         Use the selected physical model for all work
 /computer-use models                Show selected routing and phase
 /computer-use                      Help and tool/mode summary
 ```
@@ -89,7 +89,9 @@ After `/reload`, select `/computer-use models hybrid`, then enable `/computer-us
 
 To change accounts, select a physical model on that account through Pi's normal `/model` UI, then run `/computer-use models hybrid` again. Saved targets are recomputed, not reused from a different provider. Bare `/computer-use models` shows the selection and phase. The old `instructions`, `status`, `models status`, `models list`, and manual provider/ID setters are removed; operating rules still apply automatically while ON.
 
-Sol inspects semantics and hands a bounded plan to Luna with `desktop_model_phase`. Luna executes registered desktop tools and verifies results; a difficult, state-verified blocker permits **one** explicit escalation to Sol, which finishes the task without bouncing back. Ordinary OFF prompts use the original physical model. `/model` shows `computer-use/sol-luna`; the host footer and assistant messages show the actual physical dispatch. Hybrid requires Pi's `registerVirtualModel` API; native tools remain loadable without it. Preferences follow the session branch; no global default is changed.
+Selecting hybrid changes only the extension's routing preference; it does **not** replace your standard `/model` selection. During an ON task, the extension switches real physical models through Pi's native `setModel` API: Sol inspects and hands a bounded plan to Luna using `desktop_model_phase`; Luna executes and verifies. A difficult, verified blocker permits **one** escalation to Sol without another bounce. At settlement it restores the starting physical model if routing still owns the selection; a manual model change is never overwritten. OFF prompts leave the selected physical model alone.
+
+Only the Computer use ON bar shows routing, for example `Computer use ON · gpt-sol → gpt-luna · изпълнява: Luna · 00:12`. It disappears while OFF. Pi's standard footer remains untouched and shows the real selected model; no `computer-use/sol-luna` virtual entry is registered. Old virtual selections migrate to a saved physical model when available. Preferences follow the session branch; no global default is changed.
 
 Switching models may lose prompt-cache benefits. Both receive the same conversation, so large history still costs tokens. **No quota reduction is claimed until a task-level benchmark**; the automated routing test uses a fake provider, not a billing measurement.
 

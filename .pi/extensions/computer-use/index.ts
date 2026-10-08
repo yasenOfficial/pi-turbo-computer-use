@@ -17,11 +17,11 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 	registerComputerUseCommand(pi, mode, routing);
 	registerComputerUseHandoff(pi, mode);
 	registerVisualPolicy(pi, mode);
-	pi.on("session_start", (event, ctx) => { mode.start(ctx, event.reason); routing.start(ctx); });
-	pi.on("session_tree", (_event, ctx) => { mode.restore(ctx); routing.start(ctx); });
+	pi.on("session_start", async (event, ctx) => { mode.start(ctx, event.reason); await routing.start(ctx); });
+	pi.on("session_tree", async (_event, ctx) => { mode.restore(ctx); await routing.start(ctx); });
 	pi.on("before_agent_start", async (event, ctx) => {
 		mode.beforeStart(event, ctx);
-		routing.beforeStart(event, ctx);
+		await routing.beforeStart(event, ctx);
 		await workflow.newRun(ctx.signal);
 	});
 	pi.on("tool_execution_start", (event, ctx) => { mode.toolStarted(event.toolName, ctx); });

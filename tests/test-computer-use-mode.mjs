@@ -343,4 +343,24 @@ handoffMode.setOutcome("completed"); // Even a normal boundary cannot override t
 assert.equal(handoffMode.takeCompletion(), undefined);
 assert.equal(handoffSent.length, 2);
 handoffMode.shutdown(handoffCtx);
+// Routing is part of the ON widget only; it never replaces Pi's standard footer.
+const barHarness = extensionHarness(new Map());
+const barMode = new ComputerUseMode(barHarness.pi, async () => { throw new Error("No notification expected"); });
+const barWidgets = new Map();
+const barCtx = { ...ctx, sessionManager: { getBranch: () => barHarness.entries },
+	ui: { ...ctx.ui, setWidget: (key, value, options) => barWidgets.set(key, { value, options }),
+		setStatus: () => { throw new Error("Routing must not add standard-footer status"); },
+		setFooter: () => { throw new Error("Standard footer must remain untouched"); } } };
+barMode.setRoutingLabel("gpt-sol → gpt-luna · изпълнява: Luna", barCtx);
+assert.equal(barWidgets.get("computer-use-mode").value, undefined, "routing is invisible while OFF");
+barMode.setEnabled(true, barCtx);
+const barComponent = barWidgets.get("computer-use-mode").value({}, { fg: (_color, text) => text });
+assert.match(barComponent.render(120)[0], /Computer use ON · gpt-sol → gpt-luna · изпълнява: Luna/);
+for (const width of [0, 1, 8, 20, 40, 80, 120, 192]) assert.ok(visibleWidth(barComponent.render(width)[0]) <= width);
+barMode.setRoutingLabel("single · gpt-sol", barCtx);
+assert.match(barComponent.render(120)[0], /Computer use ON · single · gpt-sol/);
+barMode.setEnabled(false, barCtx);
+assert.equal(barWidgets.get("computer-use-mode").value, undefined);
+barMode.shutdown(barCtx);
+
 console.log("Computer-use mode passed: session-isolated ON/OFF, default OFF startup, reload/branch persistence, monotonic whole-request/last timer, silent abort/Stop, ticker cleanup and notifications; no desktop or model calls.");

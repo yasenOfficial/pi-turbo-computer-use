@@ -23,6 +23,7 @@ export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseM
 			}
 			if (["toggle", "on", "off"].includes(task) && mode) {
 				mode.setEnabled(task === "on" || (task === "toggle" && !mode.isEnabled()), ctx);
+				routing?.refreshLabel(ctx);
 				ctx.ui.notify(`Computer use ${mode.isEnabled() ? "ON — пиши desktop задачите директно." : "OFF — desktop наблюдението и действията са блокирани."} Изключването не прекъсва текуща задача и не отменя emergency Stop.`, "info");
 				return;
 			}
