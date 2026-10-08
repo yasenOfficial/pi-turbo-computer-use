@@ -414,6 +414,7 @@ mod tests {
             role: role.into(),
             bounds: None,
             value: None,
+            value_read_failed: false,
             enabled: None,
             visible: None,
             focused: None,

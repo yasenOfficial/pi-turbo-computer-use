@@ -18,7 +18,10 @@ mod visual;
 use accessibility::Accessibility;
 use anyhow::{bail, Context, Result};
 use feedback::{Activity, Command as Visual, Lifecycle, Suspension};
-use protocol::{BatchAction, BatchResult, BatchStep, Request, Response, WaitCondition};
+use protocol::{
+    AssertActual, AssertFields, AssertionDetail, BatchAction, BatchResult, BatchStep, Request,
+    Response, WaitCondition,
+};
 use state::{Bounds, Cache, Delta, Node, Snapshot};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -498,6 +501,14 @@ fn batch_limit(actions: &[BatchAction]) -> Result<()> {
     if actions.is_empty() || actions.len() > MAX_BATCH_ACTIONS {
         bail!("batch requires 1..={MAX_BATCH_ACTIONS} actions");
     }
+    // Fail malformed assertions before any earlier step can dispatch input.
+    // Uniqueness and equality still require a fresh scan at the assertion step.
+    for (index, action) in actions.iter().enumerate() {
+        if let BatchAction::Assert { target, expected } = action {
+            validate_assert(target, expected)
+                .with_context(|| format!("batch assertion at step {index}"))?;
+        }
+    }
     Ok(())
 }
 
@@ -543,6 +554,91 @@ fn resolve_target(nodes: &[Node], target: &WaitCondition) -> Result<String> {
     Ok(node.id.clone())
 }
 
+// Bound both the request and echoed readbacks. Compare full live values before
+// truncating output, so a long prefix can never turn a mismatch into a match.
+fn bounded(value: &str, max: usize) -> String {
+    let mut end = value.len().min(max);
+    while !value.is_char_boundary(end) {
+        end -= 1;
+    }
+    value[..end].to_owned()
+}
+
+fn validate_assert(target: &WaitCondition, expected: &AssertFields) -> Result<()> {
+    if target.id.is_none() && target.name.is_none() && target.role.is_none() {
+        bail!("assert target requires id, name, or role");
+    }
+    for field in [&target.id, &target.name, &target.role] {
+        if field.as_ref().is_some_and(|s| s.len() > 240) {
+            bail!("assert target field exceeds 240 characters");
+        }
+    }
+    if expected.name.as_ref().is_some_and(|s| s.len() > 240) {
+        bail!("assert expected name exceeds 240 characters");
+    }
+    if expected
+        .value
+        .as_ref()
+        .and_then(Option::as_ref)
+        .is_some_and(|s| s.len() > 16_384)
+    {
+        bail!("assert expected value exceeds 16384 characters");
+    }
+    if expected.name.is_none()
+        && expected.value.is_none()
+        && expected.enabled.is_none()
+        && expected.visible.is_none()
+        && expected.focused.is_none()
+    {
+        bail!("assert expected requires at least one field");
+    }
+    Ok(())
+}
+
+fn compare_assert(node: &Node, expected: AssertFields) -> Result<AssertionDetail> {
+    // Password fields are deliberately not exposed by the tree walker. Never
+    // try to verify a value on a password role, including `value: null`.
+    if node.role == "password text" && expected.value.is_some() {
+        bail!("cannot assert password value");
+    }
+    // A failed text/value getter is not evidence that the value is absent.
+    // Reject even an explicit `value: null` before comparing or echoing it.
+    if node.value_read_failed && expected.value.is_some() {
+        bail!("cannot assert unreadable value");
+    }
+    let matched = expected.name.as_ref().is_none_or(|name| *name == node.name)
+        && expected
+            .value
+            .as_ref()
+            .is_none_or(|value| value == &node.value)
+        && expected
+            .enabled
+            .is_none_or(|enabled| node.enabled == Some(enabled))
+        && expected
+            .visible
+            .is_none_or(|visible| node.visible == Some(visible))
+        && expected
+            .focused
+            .is_none_or(|focused| node.focused == Some(focused));
+    let actual = AssertActual {
+        name: expected.name.as_ref().map(|_| bounded(&node.name, 240)),
+        value: expected
+            .value
+            .as_ref()
+            .map(|_| node.value.as_ref().map(|v| bounded(v, 16_384))),
+        enabled: expected.enabled.map(|_| node.enabled),
+        visible: expected.visible.map(|_| node.visible),
+        focused: expected.focused.map(|_| node.focused),
+    };
+    Ok(AssertionDetail {
+        node_id: bounded(&node.id, 240),
+        role: bounded(&node.role, 240),
+        matched,
+        expected,
+        actual,
+    })
+}
+
 // A selector is refreshed immediately before resolution, without returning a
 // full snapshot as a step result. The resolved id is passed to handle only once.
 async fn batch_target(
@@ -569,8 +665,11 @@ async fn batch_step(
     metrics: &metrics::Metrics,
     action: BatchAction,
     wait_timeout: Option<u64>,
-) -> Result<Response> {
+) -> Result<(Response, Option<AssertionDetail>)> {
     let mut guard = measured_lock(daemon, metrics).await;
+    if guard.safety.stopped() {
+        bail!("input stopped; batch cancelled by emergency stop");
+    }
     // The batch token covers selector resolution and waits; handle owns the
     // individual input action. No third token or X11 round trip is needed.
     let request = match action {
@@ -589,7 +688,32 @@ async fn batch_step(
                 Some(timeout.min(wait_timeout.unwrap_or(timeout))),
                 condition,
             )
-            .await;
+            .await
+            .map(|response| (response, None));
+        }
+        BatchAction::Assert { target, expected } => {
+            validate_assert(&target, &expected)?;
+            let backend = guard.accessibility.as_ref().context("AT-SPI unavailable")?;
+            // observe alone can reuse its notification cache. Explicitly force a
+            // full scan: app/window properties and quiet adapters can change
+            // without a corresponding node event. No screenshot or GetAll.
+            backend.invalidate();
+            guard.observe(None, false).await?;
+            if guard.accessibility.is_none() {
+                bail!("AT-SPI unavailable after assertion refresh");
+            }
+            if guard.safety.stopped() {
+                bail!("input stopped; batch cancelled by emergency stop");
+            }
+            let id = resolve_target(&guard.cache.current().nodes, &target)?;
+            let node = guard
+                .cache
+                .current()
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .context("target disappeared during assertion")?;
+            return Ok((Response::empty(), Some(compare_assert(node, expected)?)));
         }
         BatchAction::Click {
             id,
@@ -645,7 +769,30 @@ async fn batch_step(
         },
         BatchAction::FocusWindow { title } => Request::FocusWindow { title },
     };
-    guard.handle(request).await
+    guard.handle(request).await.map(|response| (response, None))
+}
+
+// Preserve an earlier failure, but never report a successful final step when
+// Stop arrived while that step or its read-only verification was in flight.
+fn mark_stopped_step(error: &mut Option<String>, stopped: bool) {
+    if stopped && error.is_none() {
+        *error = Some("input stopped; batch cancelled by emergency stop".into());
+    }
+}
+
+fn mark_stopped_response(response: &mut Response) {
+    response.input_stopped = Some(true);
+    if let Some(batch) = response.batch.as_mut() {
+        batch.completed = false;
+        if response.error.is_none() {
+            if let Some(step) = batch.steps.last_mut() {
+                mark_stopped_step(&mut step.error, true);
+                step.ok = false;
+                response.error = step.error.clone();
+            }
+        }
+    }
+    response.ok = false;
 }
 
 async fn run_batch(
@@ -663,7 +810,7 @@ async fn run_batch(
     // read-only batch of waits should not light up the desktop.
     let _activity = if actions
         .iter()
-        .any(|a| !matches!(a, BatchAction::Wait { .. }))
+        .any(|a| !matches!(a, BatchAction::Wait { .. } | BatchAction::Assert { .. }))
     {
         measured_lock(daemon, metrics).await.activity().await
     } else {
@@ -718,13 +865,24 @@ async fn run_batch(
                     step_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
                 );
         }
-        let (error, matched) = match result {
-            Ok(response) if response.matched == Some(false) => {
-                (Some("wait condition timed out".to_string()), Some(false))
+        let (mut error, matched, assertion) = match result {
+            Ok((response, _)) if response.matched == Some(false) => (
+                Some("wait condition timed out".to_string()),
+                Some(false),
+                None,
+            ),
+            Ok((_, Some(detail))) => {
+                let error = (!detail.matched).then(|| "assertion mismatch".to_string());
+                let matched = Some(detail.matched);
+                (error, matched, Some(detail))
             }
-            Ok(response) => (None, response.matched),
-            Err(error) => (Some(format!("{error:#}")), None),
+            Ok((response, None)) => (None, response.matched, None),
+            Err(error) => (Some(format!("{error:#}")), None, None),
         };
+        // A Stop received during a read-only assertion or an in-flight step
+        // also prevents later steps, even with stop_on_error:false.
+        let stopped = stopped || measured_lock(daemon, metrics).await.safety.stopped();
+        mark_stopped_step(&mut error, stopped);
         if let Some(error) = &error {
             first_error.get_or_insert_with(|| error.clone());
         }
@@ -735,21 +893,23 @@ async fn run_batch(
             ok: error.is_none(),
             error,
             matched,
+            assertion,
             elapsed_ms: step_started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         });
         if abort {
             break;
         }
     }
+    let input_stopped = measured_lock(daemon, metrics).await.safety.stopped();
     let mut response = Response {
         ok: first_error.is_none(),
         error: first_error,
         batch: Some(BatchResult {
-            completed: steps.len() == total,
+            completed: steps.len() == total && !input_stopped,
             steps,
             elapsed_ms: started.elapsed().as_millis().min(u128::from(u64::MAX)) as u64,
         }),
-        input_stopped: Some(measured_lock(daemon, metrics).await.safety.stopped()),
+        input_stopped: Some(input_stopped),
         ..Response::empty()
     };
     // Even after a failed step, report effects of successful earlier actions.
@@ -768,6 +928,11 @@ async fn run_batch(
                 response.error = Some(format!("batch final observation: {error:#}"));
             }
         }
+    }
+    // Stop can also arrive during the final (read-only) observation. A
+    // response reporting input_stopped must not claim a successful batch.
+    if guard.safety.stopped() {
+        mark_stopped_response(&mut response);
     }
     response
 }
@@ -1410,11 +1575,12 @@ mod upgrade_tests;
 #[cfg(test)]
 mod tests {
     use super::{
-        batch_delta, batch_limit, batch_step, clipped_bounds, matches_condition, resolve_target,
-        Daemon,
+        batch_delta, batch_limit, batch_step, clipped_bounds, compare_assert,
+        mark_stopped_response, mark_stopped_step, matches_condition, resolve_target, run_batch,
+        validate_assert, Daemon,
     };
     use crate::{
-        protocol::{BatchAction, WaitCondition},
+        protocol::{AssertFields, BatchAction, BatchResult, BatchStep, Response, WaitCondition},
         state::{Bounds, Cache, Node},
     };
 
@@ -1831,6 +1997,7 @@ mod tests {
             role: "push button".into(),
             bounds: None,
             value: None,
+            value_read_failed: false,
             enabled: None,
             visible: None,
             focused: None,
@@ -1861,6 +2028,209 @@ mod tests {
         assert_eq!(delta.changed.len(), 1);
         assert_eq!(delta.changed[0].id, "n2");
         assert!(delta.removed.is_empty());
+    }
+
+    #[test]
+    fn assert_checks_exact_live_node_fields_and_bounded_readbacks() {
+        let selector = WaitCondition {
+            id: Some("n1".into()),
+            name: None,
+            role: None,
+        };
+        let mut node = Node {
+            id: "n1".into(),
+            parent: None,
+            children: vec![],
+            name: "Ready".into(),
+            role: "entry".into(),
+            bounds: None,
+            value: None,
+            value_read_failed: false,
+            enabled: Some(false),
+            visible: Some(true),
+            focused: None,
+            actions: None,
+        };
+        assert!(validate_assert(&selector, &AssertFields::default()).is_err());
+        assert!(validate_assert(
+            &WaitCondition {
+                id: None,
+                name: None,
+                role: None
+            },
+            &AssertFields {
+                enabled: Some(false),
+                ..AssertFields::default()
+            }
+        )
+        .is_err());
+        assert!(validate_assert(
+            &selector,
+            &AssertFields {
+                value: Some(Some("x".repeat(16_385))),
+                ..AssertFields::default()
+            }
+        )
+        .is_err());
+        assert!(validate_assert(
+            &selector,
+            &AssertFields {
+                name: Some("x".repeat(241)),
+                ..AssertFields::default()
+            }
+        )
+        .is_err());
+        let expected = AssertFields {
+            name: Some("Ready".into()),
+            value: Some(None),
+            enabled: Some(false),
+            visible: Some(true),
+            focused: Some(false),
+        };
+        let detail = compare_assert(&node, expected).unwrap();
+        assert!(!detail.matched); // absent focus is not false
+        assert_eq!(
+            serde_json::to_value(&detail).unwrap()["actual"]["focused"],
+            serde_json::Value::Null
+        );
+        let expected = AssertFields {
+            value: Some(None),
+            enabled: Some(false),
+            ..AssertFields::default()
+        };
+        assert!(compare_assert(&node, expected).unwrap().matched);
+        node.value_read_failed = true;
+        for value in [None, Some("".into())] {
+            let error = compare_assert(
+                &node,
+                AssertFields {
+                    value: Some(value),
+                    ..AssertFields::default()
+                },
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("unreadable value"));
+        }
+        assert!(
+            compare_assert(
+                &node,
+                AssertFields {
+                    enabled: Some(false),
+                    ..AssertFields::default()
+                }
+            )
+            .unwrap()
+            .matched,
+            "unreadable value does not invalidate unrelated fields"
+        );
+        node.value_read_failed = false;
+        node.value = Some("secret".into());
+        assert!(
+            !compare_assert(
+                &node,
+                AssertFields {
+                    value: Some(None),
+                    ..AssertFields::default()
+                }
+            )
+            .unwrap()
+            .matched
+        );
+        assert!(
+            !compare_assert(
+                &node,
+                AssertFields {
+                    name: Some("Read".into()),
+                    ..AssertFields::default()
+                }
+            )
+            .unwrap()
+            .matched
+        );
+        node.value = Some("z".repeat(20_000));
+        let detail = compare_assert(
+            &node,
+            AssertFields {
+                value: Some(Some("different".into())),
+                ..AssertFields::default()
+            },
+        )
+        .unwrap();
+        assert!(!detail.matched);
+        assert_eq!(detail.actual.value.unwrap().unwrap().len(), 16_384);
+        node.role = "password text".into();
+        assert!(compare_assert(
+            &node,
+            AssertFields {
+                value: Some(None),
+                ..AssertFields::default()
+            }
+        )
+        .is_err());
+        assert!(
+            compare_assert(
+                &node,
+                AssertFields {
+                    name: Some("Ready".into()),
+                    ..AssertFields::default()
+                }
+            )
+            .unwrap()
+            .matched
+        );
+        assert!(resolve_target(&[], &selector)
+            .unwrap_err()
+            .to_string()
+            .contains("not found"));
+        assert!(resolve_target(&[node.clone(), node], &selector)
+            .unwrap_err()
+            .to_string()
+            .contains("ambiguous"));
+    }
+
+    #[test]
+    fn stop_after_last_success_is_still_a_batch_failure() {
+        let mut response = Response {
+            batch: Some(BatchResult {
+                steps: vec![BatchStep {
+                    index: 0,
+                    kind: "assert",
+                    ok: true,
+                    elapsed_ms: 1,
+                    error: None,
+                    matched: Some(true),
+                    assertion: None,
+                }],
+                elapsed_ms: 1,
+                completed: true,
+            }),
+            ..Response::empty()
+        };
+        mark_stopped_response(&mut response);
+        assert!(!response.ok);
+        assert_eq!(response.input_stopped, Some(true));
+        assert!(response
+            .error
+            .as_deref()
+            .unwrap()
+            .starts_with("input stopped;"));
+        let batch = response.batch.unwrap();
+        assert!(!batch.completed);
+        assert!(!batch.steps[0].ok);
+        assert_eq!(batch.steps[0].matched, Some(true)); // evidence predates cancellation
+        let mut error = None;
+        mark_stopped_step(&mut error, true);
+        assert_eq!(
+            error.as_deref(),
+            Some("input stopped; batch cancelled by emergency stop")
+        );
+        assert!(error.is_some(), "the last step must not report ok:true");
+        let mut existing = Some("assertion mismatch".into());
+        mark_stopped_step(&mut existing, true);
+        assert_eq!(existing.as_deref(), Some("assertion mismatch"));
+        let mut running = None;
+        mark_stopped_step(&mut running, false);
+        assert!(running.is_none());
     }
 
     #[test]
@@ -1900,6 +2270,7 @@ mod tests {
             role: "button".into(),
             bounds: None,
             value: None,
+            value_read_failed: false,
             enabled: None,
             visible: None,
             focused: None,
@@ -1958,6 +2329,57 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("either id or target"));
+        // A malformed later assertion rejects the entire batch before the
+        // first keypress or even an initial desktop observation.
+        for invalid in [
+            BatchAction::Assert {
+                target: WaitCondition {
+                    id: Some("n1".into()),
+                    name: None,
+                    role: None,
+                },
+                expected: AssertFields::default(),
+            },
+            BatchAction::Assert {
+                target: WaitCondition {
+                    id: None,
+                    name: None,
+                    role: None,
+                },
+                expected: AssertFields {
+                    enabled: Some(false),
+                    ..AssertFields::default()
+                },
+            },
+            BatchAction::Assert {
+                target: WaitCondition {
+                    id: Some("n1".into()),
+                    name: None,
+                    role: None,
+                },
+                expected: AssertFields {
+                    value: Some(Some("x".repeat(16_385))),
+                    ..AssertFields::default()
+                },
+            },
+        ] {
+            let actions = vec![
+                BatchAction::Keypress {
+                    key: "Return".into(),
+                },
+                invalid,
+            ];
+            let rejected = run_batch(&daemon, &metrics, actions, false, true).await;
+            assert!(!rejected.ok);
+            assert!(rejected
+                .error
+                .unwrap()
+                .contains("batch assertion at step 1"));
+            assert!(rejected.batch.is_none());
+            let guard = daemon.lock().await;
+            assert!(guard.input.is_none());
+            assert_eq!(guard.cache.current().generation, 0);
+        }
         daemon.lock().await.safety.stop();
         let error = batch_step(
             &daemon,

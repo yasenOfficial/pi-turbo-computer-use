@@ -21,11 +21,17 @@ const target = Type.Optional(Type.Object({
 	role: Type.Optional(Type.String()), name: Type.Optional(Type.String()), id: Type.Optional(Type.String()),
 }));
 const waitCondition = Type.Object({ id: Type.Optional(Type.String()), name: Type.Optional(Type.String()), role: Type.Optional(Type.String()) });
+const assertExpected = Type.Object({
+	name: Type.Optional(Type.String({ maxLength: 240 })),
+	value: Type.Optional(Type.Union([Type.String({ maxLength: 16_384 }), Type.Null()])),
+	enabled: Type.Optional(Type.Boolean()), visible: Type.Optional(Type.Boolean()), focused: Type.Optional(Type.Boolean()),
+}, { additionalProperties: false, minProperties: 1 });
 const batchAction = Type.Union([
 	Type.Object({ type: Type.Literal("click"), id, target, ...xy, physical: Type.Optional(Type.Boolean()), button: Type.Optional(Type.String()), clicks: Type.Optional(Type.Integer({ minimum: 1, maximum: 5 })) }),
 	Type.Object({ type: Type.Literal("double_click"), id, target, ...xy }),
 	Type.Object({ type: Type.Literal("wait"), since: Type.Optional(Type.Integer({ minimum: 0 })), condition: Type.Optional(waitCondition), timeout_ms: Type.Optional(Type.Integer({ minimum: 0, maximum: 120_000 })), milliseconds: Type.Optional(Type.Integer({ minimum: 0, maximum: 120_000 })) }),
 	Type.Object({ type: Type.Literal("set_text"), id, text: Type.String(), target }),
+	Type.Object({ type: Type.Literal("assert"), target: waitCondition, expected: assertExpected }, { additionalProperties: false }),
 	Type.Object({ type: Type.Literal("keypress"), key: Type.String() }),
 	Type.Object({ type: Type.Literal("focus_window"), title: Type.String() }),
 	Type.Object({ type: Type.Literal("scroll"), direction: Type.Union([Type.Literal("up"), Type.Literal("down"), Type.Literal("left"), Type.Literal("right")]), amount: Type.Optional(Type.Integer({ minimum: 1, maximum: 1000 })), ...xy }),
@@ -34,7 +40,7 @@ const batchAction = Type.Union([
 const commands: CommandDefinition[] = [
 	{
 		name: "desktop_batch", label: "Desktop batch",
-		description: "Run 1–24 ordered desktop actions in one IPC request, with event-driven waits and semantic selectors. No rollback; stop at first failure by default.",
+		description: "Run 1–24 ordered desktop actions/checks in one IPC request. Use wait for transitions, then assert exact live name/value/enabled/visible/focused fields of a unique semantic target (value:null means no value). No rollback; stop at first failure by default. Assertions never read password values.",
 		parameters: Type.Object({ actions: Type.Array(batchAction, { minItems: 1, maxItems: 24 }), stop_on_error: Type.Optional(Type.Boolean()), include_changes: Type.Optional(Type.Boolean()) }),
 	},
 	{
@@ -220,7 +226,7 @@ function conciseNode(value: unknown): unknown {
 	if (!value || typeof value !== "object" || Array.isArray(value)) return value;
 	const node = value as Record<string, unknown>;
 	const result: Record<string, unknown> = {};
-	for (const key of ["id", "role", "name", "value", "enabled", "visible", "focused", "actions", "parent", "bounds"]) {
+	for (const key of ["id", "role", "name", "value", "value_read_failed", "enabled", "visible", "focused", "actions", "parent", "bounds"]) {
 		const field = node[key];
 		if (field === undefined) continue;
 		if (typeof field === "string") {
@@ -535,7 +541,12 @@ function responseText(response: Record<string, unknown>, budget = MAX_TEXT): str
 		const item = step as Record<string, unknown>;
 		return { index: item.index, type: typeof item.type === "string" ? item.type.slice(0, 40) : item.type, ok: item.ok,
 			elapsedMs: item.elapsedMs ?? item.elapsed_ms,
-			...(typeof item.error === "string" ? { error: item.error.slice(0, MAX_FIELD) } : {}), matched: item.matched };
+			...(typeof item.error === "string" ? { error: item.error.slice(0, MAX_FIELD) } : {}), matched: item.matched,
+			...(item.assertion && typeof item.assertion === "object" ? { assertion: {
+				nodeId: (item.assertion as Record<string, unknown>).nodeId,
+				matched: (item.assertion as Record<string, unknown>).matched,
+				readback_omitted: true,
+			} } : {}) };
 	}) : undefined;
 	const error = typeof response.error === "string" ? response.error.slice(0, MAX_FIELD) : undefined;
 	const changes = response.changes as Record<string, unknown> | undefined;
@@ -661,7 +672,7 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 			label: command.label,
 			description: command.description,
 			...(command.name === "desktop_observe" ? { promptGuidelines: [
-				"For desktop automation use desktop_* tools only while the user has explicitly enabled computer use. OFF blocks desktop observation/actions; never auto-enable it or bypass the block, ask for /computer-use on. Emergency Stop and metadata-only ping/metrics remain available. Never use bash/Node raw sockets or screenshot temp files. To open a known installed app, prefer desktop_launch_app by desktop ID or exact display name over navigating a GUI menu. Dispatch is not window readiness: wait/observe to verify. Use AT-SPI/windows/GIO semantic observations first. Compact observe/changes omissions do not prove inaccessible controls: search_seen, inspect and re-observe live nodes before concluding semantic access is blocked. Capture ONLY for an explicit user screenshot request or a concrete blocker after bounded semantic attempts. Before EACH desktop_screenshot, desktop_inspect_visual, or desktop_observe screenshot:true call desktop_visual_permission for that exact capture and target with basis, visible reason and checks. Full-screen needs a stated missing-layout need or explicit full-screen request; never parallelize grants/captures. The model declaration cannot independently verify user intent. Revalidate historical search results before acting, batch related actions, and use images returned directly by desktop tools (or their normal text fallback). Minimize images and model round trips: inspect accessible field values/state without a screenshot, use changes or targeted waits for transitions, and batch verified actions. Do not recapture information already available semantically. For genuinely inaccessible UI, prefer a validated node crop or the smallest useful screenshot rectangle rather than repeated full-screen captures.",
+				"Follow the computer-use mode rules: registered desktop_* tools only, AT-SPI/windows/GIO first, revalidate historical IDs and search compact omissions. Batch verified actions with wait/assert checks; prefer semantic changes over full observations. Do not recapture information already available semantically. Every image needs exact desktop_visual_permission for an explicit request or verified semantic blocker. Minimize images and model round trips; never bypass OFF, Stop or uncertain-input rules.",
 			] } : {}),
 			parameters: command.parameters,
 			annotations: {

@@ -1,7 +1,6 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type { ComputerUseMode } from "./mode.js";
-import { SAVED_LOGIN_POLICY } from "./instructions.js";
 
 /** Local user handoff only. No daemon, credentials, background agent, or nested model. */
 export function registerComputerUseHandoff(pi: ExtensionAPI, mode: ComputerUseMode): void {
@@ -11,8 +10,7 @@ export function registerComputerUseHandoff(pi: ExtensionAPI, mode: ComputerUseMo
 		exposure: "model-only",
 		description: "Hand a genuinely blocked desktop task back to the user, with an Action required desktop notification at final settlement instead of a completion notification. Use for unavailable or ambiguous saved login, MFA/2FA/CAPTCHA, required permission/clarification, or a verified technical blocker after safe alternatives are exhausted. Explain one concrete next step, then end the turn and wait for the user's reply. This tool does not log in, access credentials, perform desktop input, or grant permission. Never put passwords, tokens, or MFA codes in instructions.",
 		promptGuidelines: [
-			"For desktop tasks, work autonomously through authorized, safe steps until the requested result is verified. Do not stop at the first recoverable UI error: inspect current state and try a materially different safe approach within a small bounded retry budget. Never repeat uncertain input or expand permission. Do not hand off an ordinary login if the matching account has browser-native saved-password autofill; use the authorized normal login flow. If an unavailable/ambiguous saved login, MFA/2FA/CAPTCHA or other genuine user-only blocker prevents completion, call desktop_request_user with a concrete user step before your final reply. Do not report a blocked task as completed. After the user replies, re-observe and continue in this same session; never wait in a background loop or start another agent.",
-			SAVED_LOGIN_POLICY,
+			"Use desktop_request_user only for a genuine user-only blocker (unavailable/ambiguous saved login, MFA/2FA/CAPTCHA, missing permission/clarification or exhausted safe alternatives). Follow the saved-login policy in the ON mode instructions; never hand off a matching browser-native autofill. Give one concrete step, report Action required, end the turn and re-observe after the user's reply. Never retry uncertain input, poll in background, or start another agent.",
 		],
 		parameters: Type.Object({
 			reason: Type.Union([Type.Literal("login"), Type.Literal("mfa"), Type.Literal("captcha"),

@@ -25,15 +25,17 @@ function sameTarget(a: Target, b: Target): boolean {
 }
 
 /** Model-declared, single-use capture authorization; this cannot verify the user's actual intent. */
-export function registerVisualPolicy(pi: ExtensionAPI, mode?: Pick<ComputerUseMode, "isWaitingForUser">): void {
+export function registerVisualPolicy(pi: ExtensionAPI, mode?: Pick<ComputerUseMode, "isWaitingForUser">,
+	declarations?: { grant: (name: string) => void; clear: () => void }): void {
 	let permit: Permit | undefined;
 	// message_end precedes tool execution: reject BOTH siblings before either can run.
 	const mixedCallIds = new Set<string>();
 	let stopped = false;
 	let grantSignal: AbortSignal | undefined;
 	let onAbort: (() => void) | undefined;
-	const clear = () => {
+	const clear = (consuming = false) => {
 		permit = undefined;
+		if (!consuming) declarations?.clear();
 		if (grantSignal && onAbort) grantSignal.removeEventListener("abort", onAbort);
 		grantSignal = undefined;
 		onAbort = undefined;
@@ -93,10 +95,11 @@ export function registerVisualPolicy(pi: ExtensionAPI, mode?: Pick<ComputerUseMo
 			permit = { capture: params.capture, target };
 			grantSignal = signal ?? ctx.signal;
 			if (grantSignal) {
-				onAbort = clear;
+				onAbort = () => clear();
 				grantSignal.addEventListener("abort", onAbort, { once: true });
 				if (grantSignal.aborted) { clear(); throw new Error("Visual permission cancelled"); }
 			}
+			declarations?.grant(params.capture);
 			return { content: [{ type: "text", text: JSON.stringify({ granted: true, single_use: true,
 				capture: params.capture, target, basis: params.basis, reason, checks }) }],
 				details: { capture: params.capture, target, basis: params.basis, reason, checks } };
@@ -113,12 +116,16 @@ export function registerVisualPolicy(pi: ExtensionAPI, mode?: Pick<ComputerUseMo
 		// Consume before checking: wrong target, invalid arguments, cancellation, or downstream block
 		// must never leave a permit reusable. Parallel sibling captures cannot share it.
 		const current = permit;
-		clear();
+		clear(true); // Keep the current declaration through execution; withdraw on tool_execution_end.
 		const target = captureTarget(event.toolName, event.input);
 		if (stopped || mode?.isWaitingForUser() || ctx.signal?.aborted || !current || current.capture !== event.toolName ||
 			!target || !sameTarget(current.target, target)) {
+			declarations?.clear();
 			return { block: true, reason: "Visual capture blocked: request one matching desktop_visual_permission after semantic checks or an explicit user screenshot request." };
 		}
+	});
+	pi.on("tool_execution_end", (event) => {
+		if (["desktop_screenshot", "desktop_inspect_visual", "desktop_observe"].includes(event.toolName) && !permit) declarations?.clear();
 	});
 	pi.on("before_agent_start", reset);
 	pi.on("agent_settled", reset);

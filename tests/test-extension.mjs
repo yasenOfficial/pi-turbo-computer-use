@@ -216,13 +216,15 @@ try {
 		} };
 	}
 	const tools = new Map();
+	let activeTools = [];
 	const { handlers, on, count } = listenerRegistry();
 	const commands = new Map();
 	const sent = [];
-	extension({ registerTool: (tool) => tools.set(tool.name, tool), registerVirtualModel: () => {},
+	extension({ registerTool: (tool) => { tools.set(tool.name, tool); activeTools.push(tool.name); }, registerVirtualModel: () => {},
 		registerCommand: (name, options) => commands.set(name, options),
 		getAllTools: () => [...tools.keys()].map((name) => ({ name })),
-		getActiveTools: () => [...tools.keys()],
+		getActiveTools: () => [...activeTools],
+		setActiveTools: (names) => { activeTools = [...names]; },
 		appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
 		setModel: async () => true,
 		sendUserMessage: (content, options) => sent.push({ content, options }), on });
@@ -234,7 +236,10 @@ try {
 	assert.equal(tools.get("desktop_observe").promptGuidelines.length, 1);
 	assert.match(tools.get("desktop_observe").promptGuidelines[0], /Minimize images and model round trips/);
 	assert.match(tools.get("desktop_observe").promptGuidelines[0], /Do not recapture information already available semantically/);
-	assert.equal(tools.size, 24, `expected all 24 tools, got ${tools.size}`);
+	assert.equal(tools.size, 24, `expected all 24 registered tools, got ${tools.size}`);
+	await handlers.get("session_start")({ reason: "startup" }, fixtureContext);
+	assert.deepEqual(activeTools.filter(name => name.startsWith("desktop_")),
+		["desktop_stop", "desktop_ping", "desktop_metrics"], "fresh startup exposes only emergency/metadata desktop tools");
 	assert.equal(tools.get("desktop_model_phase").exposure, "model-only");
 	assert.equal(tools.get("desktop_visual_permission").exposure, "model-only");
 	assert.equal(tools.get("desktop_request_user").exposure, "model-only");
@@ -243,7 +248,7 @@ try {
 	assert.ok(command, "slash command was not registered");
 	const ctx = (idle) => ({ ...fixtureContext, isIdle: () => idle });
 	await command.handler("", ctx(true));
-	assert.match(notifications.at(-1).message, /24 registered desktop_\* tools \(24 active\)/);
+	assert.match(notifications.at(-1).message, /24 registered desktop_\* tools \(3 active\)/);
 	assert.match(notifications.at(-1).message, /connectivity and input state not checked/);
 	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single"]);
 	for (const removed of ["status", "instructions"]) {
@@ -259,13 +264,57 @@ try {
 		.filter((result) => result?.block);
 	for (const toolName of ["desktop_observe", "desktop_click", "desktop_request_user", "desktop_model_phase", "desktop_visual_permission"])
 		assert.match((await guard(toolName))[0]?.reason ?? "", /OFF/, `${toolName} must be blocked while OFF`);
-	for (const toolName of ["desktop_stop", "desktop_ping", "desktop_metrics"])
+	for (const toolName of ["desktop_ping", "desktop_metrics"])
 		assert.equal((await guard(toolName)).length, 0, `${toolName} must remain available while OFF`);
 	await command.handler("  Open the editor and save  ", ctx(true));
 	assert.equal(sent.length, 0, "OFF must not queue the desktop task or turn mode ON");
 	assert.match(notifications.at(-1).message, /OFF.*не е изпратена/);
 	await command.handler("on", ctx(true));
 	assert.equal(entries.at(-1).data.enabled, true);
+	assert.equal(activeTools.filter(name => name.startsWith("desktop_")).length, 17, "ON declares only baseline tools");
+	for (const name of ["desktop_screenshot", "desktop_inspect_visual", "desktop_model_phase", "desktop_type", "desktop_drag"])
+		assert.ok(!activeTools.includes(name), `${name} must not be in the default ON loadout`);
+	const { SAVED_LOGIN_POLICY } = await jiti.import(path.resolve(".pi/extensions/computer-use/instructions.ts"));
+	const onStart = { prompt: "Check current window", systemPromptOptions: { sections: { other: "keep" } } };
+	await handlers.get("before_agent_start")(onStart, fixtureContext);
+	assert.equal(onStart.prompt, "Check current window", "ON instructions belong to the system section, not the user task");
+	assert.equal(onStart.systemPromptOptions.sections.other, "keep");
+	assert.ok(onStart.systemPromptOptions.sections.computer_use_mode.includes(SAVED_LOGIN_POLICY));
+	assert.match(onStart.systemPromptOptions.sections.computer_use_mode, /desktop_visual_permission/);
+	assert.match(onStart.systemPromptOptions.sections.computer_use_mode, /uncertain input/);
+	// Exercise the real index → visual-policy → loadout callback chain without executing a capture.
+	const region = { x: 5, y: 6, width: 70, height: 50 };
+	const grantParams = { basis: "explicit_user_request", reason: "The user asked for a screenshot of this small region",
+		checks: [], capture: "desktop_screenshot", target: region };
+	const receivedBeforeGrant = received.length;
+	const activityBeforeGrant = activity.length;
+	assert.equal((await guard("desktop_screenshot", region))[0]?.block, true, "inactive capture is still denied by the hard gate");
+	const granted = await tools.get("desktop_visual_permission").execute("fixture-permit", grantParams, undefined, undefined, fixtureContext);
+	assert.equal(JSON.parse(granted.content[0].text).single_use, true);
+	assert.equal(activeTools.filter(name => name.startsWith("desktop_")).length, 18);
+	assert.ok(activeTools.includes("desktop_screenshot") && !activeTools.includes("desktop_inspect_visual"));
+	assert.equal((await guard("desktop_observe")).length, 0, "ordinary semantic checks do not consume permission");
+	await handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "fixture-semantic",
+		toolName: "desktop_observe", result: undefined, isError: false }, fixtureContext);
+	assert.ok(activeTools.includes("desktop_screenshot"), "semantic checks retain the granted capture declaration");
+	assert.equal((await guard("desktop_screenshot", region)).length, 0, "exact granted crop passes the tool_call gate");
+	assert.ok(activeTools.includes("desktop_screenshot"), "declaration stays active until execution ends");
+	await handlers.get("tool_execution_end")({ type: "tool_execution_end", toolCallId: "fixture-capture",
+		toolName: "desktop_screenshot", result: undefined, isError: false }, fixtureContext);
+	assert.equal(activeTools.filter(name => name.startsWith("desktop_")).length, 17);
+	assert.ok(!activeTools.includes("desktop_screenshot"));
+	assert.equal((await guard("desktop_screenshot", region))[0]?.block, true, "capture permit cannot be reused");
+	const cancelledGrant = new AbortController();
+	await tools.get("desktop_visual_permission").execute("fixture-abort", grantParams, cancelledGrant.signal, undefined, fixtureContext);
+	assert.ok(activeTools.includes("desktop_screenshot"));
+	cancelledGrant.abort();
+	assert.equal(activeTools.filter(name => name.startsWith("desktop_")).length, 17, "abort withdraws the unused capture");
+	assert.equal((await guard("desktop_screenshot", region))[0]?.block, true);
+	assert.equal(received.length, receivedBeforeGrant, "grant, gate, and synthetic completion do not contact the daemon");
+	assert.equal(activity.length, activityBeforeGrant, "visual declaration changes do not begin a workflow");
+	await command.handler("off", ctx(true));
+	assert.equal((await guard("desktop_stop")).length, 0, "emergency Stop stays available while OFF");
+	await command.handler("on", ctx(true));
 	assert.equal((await guard("desktop_observe")).length, 0, "ON allows ordinary semantic observations");
 	for (const removed of ["instructions", "status", "models status", "models list", "models luna provider/id", "models sol provider/id"]) {
 		await command.handler(removed, ctx(true));
@@ -274,16 +323,11 @@ try {
 	await command.handler("  Open the editor and save  ", ctx(true));
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].options, undefined);
-	assert.match(sent[0].content, /desktop_\* tools only/);
-	assert.match(sent[0].content, /Do not use shell, Node, raw socket calls, or screenshot files/);
-	assert.match(sent[0].content, /revalidate the current node/);
-	assert.match(sent[0].content, /desktop_launch_app/);
-	assert.match(sent[0].content, /Never automatically retry input/);
-	assert.match(sent[0].content, /Do not capture an image just to reconfirm information already returned semantically/);
-	assert.ok(sent[0].content.endsWith("User task (verbatim):\n  Open the editor and save  "));
+	assert.equal(sent[0].content, "  Open the editor and save  ", "slash task is verbatim without duplicated policy");
+	assert.ok(!sent[0].content.includes(SAVED_LOGIN_POLICY));
 	await command.handler("Inspect the current window", ctx(false));
 	assert.deepEqual(sent[1].options, { deliverAs: "followUp" });
-	assert.ok(sent[1].content.endsWith("User task (verbatim):\nInspect the current window"));
+	assert.equal(sent[1].content, "Inspect the current window");
 	assert.equal(received.length, 0, "task submission itself must not use the daemon");
 	const { registerComputerUseCommand } = await jiti.import(path.resolve(".pi/extensions/computer-use/command.ts"));
 	let failedCommand;

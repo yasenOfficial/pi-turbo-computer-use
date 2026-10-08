@@ -22,6 +22,9 @@ pub struct Node {
     pub bounds: Option<Bounds>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub value: Option<String>,
+    /// A read attempt failed; absence must not be interpreted as a verified empty value.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub value_read_failed: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -162,6 +165,7 @@ mod tests {
             role: "button".into(),
             bounds: None,
             value: None,
+            value_read_failed: false,
             enabled: None,
             visible: None,
             focused: None,

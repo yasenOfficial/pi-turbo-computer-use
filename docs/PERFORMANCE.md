@@ -93,6 +93,12 @@ p50/p95 and transport (`shm`). Binary SHA-256 identifiers:
   conversation context, reasoning and exact provider tokenizer counts are not
   included. This is a larger multi-step diagnostic demo, not a per-click cost.
 
+## Subsequent round-trip/context work (not a new timing benchmark)
+
+The current implementation additionally prioritizes uniquely matched active-window AT-SPI traversal with separate dialog/popup capacity, supports live exact `assert` checks inside batch, and reduces model declarations to 3 OFF / 17 basic ON (+1 hybrid phase tool, +1 granted capture tool). Non-desktop tools are preserved. ON rules are no longer duplicated into every slash-command task message; saved-login and other safety rules remain in the system section. Semantic deltas/targeted waits are preferred; history is not silently rewritten.
+
+Assertions force a fresh bounded AT-SPI scan and therefore can add local scan work while avoiding a separate model request. Failed reads are marked unknown and cannot pass a null assertion. The scope/loadout/assertion changes have unit, synthetic contract, and real Pi loader tests, but **no end-to-end provider/quota or live-application performance measurement**. The historical timings above do not measure these changes.
+
 ## Remaining limits
 
 Root XDamage is **not** a complete final-screen change stream under Muffin.

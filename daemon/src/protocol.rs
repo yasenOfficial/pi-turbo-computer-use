@@ -215,6 +215,61 @@ pub enum BatchAction {
         milliseconds: Option<u64>,
         condition: Option<WaitCondition>,
     },
+    /// Immediate equality check against a fresh AT-SPI scan; never waits.
+    Assert {
+        target: WaitCondition,
+        expected: AssertFields,
+    },
+}
+
+/// A missing field is not checked. `value: null` explicitly checks for no value.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct AssertFields {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_assert_value",
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub value: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused: Option<bool>,
+}
+
+fn deserialize_assert_value<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<Option<String>>, D::Error> {
+    Option::<String>::deserialize(deserializer).map(Some)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssertionDetail {
+    pub node_id: String,
+    pub role: String,
+    pub matched: bool,
+    pub expected: AssertFields,
+    pub actual: AssertActual,
+}
+
+#[derive(Debug, Default, Serialize)]
+pub struct AssertActual {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub value: Option<Option<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enabled: Option<Option<bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub visible: Option<Option<bool>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub focused: Option<Option<bool>>,
 }
 
 impl BatchAction {
@@ -228,6 +283,7 @@ impl BatchAction {
             Self::Drag { .. } => "drag",
             Self::FocusWindow { .. } => "focus_window",
             Self::Wait { .. } => "wait",
+            Self::Assert { .. } => "assert",
         }
     }
 }
@@ -244,6 +300,8 @@ pub struct BatchStep {
     pub error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub matched: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assertion: Option<AssertionDetail>,
 }
 
 #[derive(Debug, Serialize)]
@@ -408,6 +466,7 @@ mod tests {
                     elapsed_ms: 1,
                     error: Some("stopped".into()),
                     matched: None,
+                    assertion: None,
                 }],
                 completed: false,
                 elapsed_ms: 2,
@@ -434,6 +493,69 @@ mod tests {
             r#"{"cmd":"batch","actions":[{"type":"screenshot"}]}"#
         )
         .is_err());
+    }
+
+    #[test]
+    fn assert_batch_contract_preserves_null_false_and_rejects_unknown_fields() {
+        let request: Request = serde_json::from_str(
+            r#"{"cmd":"batch","actions":[{"type":"assert","target":{"id":"n1","role":"entry"},"expected":{"value":null,"enabled":false}}]}"#,
+        ).unwrap();
+        let Request::Batch { actions, .. } = request else {
+            panic!("batch")
+        };
+        let BatchAction::Assert { target, expected } = &actions[0] else {
+            panic!("assert")
+        };
+        assert_eq!(target.id.as_deref(), Some("n1"));
+        assert!(matches!(expected.value, Some(None)));
+        assert_eq!(expected.enabled, Some(false));
+        assert_eq!(actions[0].kind(), "assert");
+        let step = serde_json::to_value(BatchStep {
+            index: 0,
+            kind: "assert",
+            ok: false,
+            elapsed_ms: 3,
+            error: Some("assertion mismatch".into()),
+            matched: Some(false),
+            assertion: Some(AssertionDetail {
+                node_id: "n1".into(),
+                role: "entry".into(),
+                matched: false,
+                expected: AssertFields {
+                    value: Some(None),
+                    enabled: Some(false),
+                    ..AssertFields::default()
+                },
+                actual: AssertActual {
+                    value: Some(Some("text".into())),
+                    enabled: Some(None),
+                    ..AssertActual::default()
+                },
+            }),
+        })
+        .unwrap();
+        assert_eq!(
+            step["assertion"]["expected"]["value"],
+            serde_json::Value::Null
+        );
+        assert_eq!(step["assertion"]["expected"]["enabled"], false);
+        assert_eq!(step["assertion"]["actual"]["value"], "text");
+        assert_eq!(
+            step["assertion"]["actual"]["enabled"],
+            serde_json::Value::Null
+        );
+        assert!(serde_json::from_str::<Request>(
+            r#"{"cmd":"batch","actions":[{"type":"assert","target":{"id":"n1"},"expected":{"unknown":true}}]}"#
+        ).is_err());
+        let request: Request = serde_json::from_str(
+            r#"{"cmd":"batch","actions":[{"type":"assert","target":{"id":"n1"},"expected":{"value":""}}]}"#
+        ).unwrap();
+        let Request::Batch { actions, .. } = request else {
+            panic!("batch")
+        };
+        assert!(
+            matches!(&actions[0], BatchAction::Assert { expected: AssertFields { value: Some(Some(value)), .. }, .. } if value.is_empty())
+        );
     }
 
     #[test]

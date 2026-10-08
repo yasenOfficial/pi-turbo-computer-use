@@ -52,9 +52,12 @@ try {
 	}));
 	const extensionErrors = [];
 	await session.bindExtensions({ mode: "print", onError: error => extensionErrors.push(error) });
-	const desktopNames = session.getActiveToolNames().filter((name) => name.startsWith("desktop_"));
-	assert.equal(desktopNames.length, 24, `expected 24 model-active desktop tools, got ${desktopNames.join(", ")}`);
-	assert.equal(session.getAllTools().filter(({ name }) => name.startsWith("desktop_")).length, 24);
+	const activeDesktop = () => session.getActiveToolNames().filter((name) => name.startsWith("desktop_"));
+	const registeredDesktop = session.getAllTools().filter(({ name }) => name.startsWith("desktop_"));
+	assert.equal(registeredDesktop.length, 24, "all desktop tools remain registered behind the hard OFF gate");
+	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"],
+		"real Pi fresh startup declares only Stop and metadata tools");
+	const otherTools = session.getActiveToolNames().filter(name => !name.startsWith("desktop_"));
 	for (const name of ["desktop_request_user", "desktop_model_phase", "desktop_visual_permission"])
 		assert.equal(session.getAllTools().find(t => t.name === name)?.exposure, "model-only", `${name} must not be callable by scripts`);
 	const phaseSchema = session.getToolDefinition("desktop_model_phase")?.parameters;
@@ -69,8 +72,7 @@ try {
 		capture: "desktop_screenshot", target: { full_screen: true } }), true);
 	assert.equal(Check(permissionSchema, { basis: "semantic_blocker", reason: "Short", checks: [], capture: "desktop_screenshot",
 		target: { full_screen: true } }), false);
-	assert.ok(desktopNames.includes("desktop_launch_app"), "launch is model-active and direct");
-	for (const name of desktopNames) {
+	for (const name of registeredDesktop.map(({ name }) => name)) {
 		const definition = session.getToolDefinition(name);
 		assert.ok(definition?.parameters, `${name} has no model-facing parameter schema`);
 	}
@@ -88,7 +90,6 @@ try {
 	assert.match((await toolCall("desktop_click", "off-click"))?.reason ?? "", /OFF/);
 	assert.match((await toolCall("desktop_request_user", "off-handoff"))?.reason ?? "", /OFF/);
 	assert.match((await toolCall("desktop_model_phase", "off-phase"))?.reason ?? "", /OFF/);
-	assert.equal((await toolCall("desktop_stop", "off-stop"))?.block, undefined, "emergency Stop is available while OFF");
 	assert.equal((await toolCall("desktop_ping", "off-ping"))?.block, undefined);
 	assert.equal((await toolCall("desktop_metrics", "off-metrics"))?.block, undefined);
 	await session.prompt("/computer-use"); // Real Pi dispatch path; help must not prompt a model.
@@ -98,24 +99,73 @@ try {
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-routing-preference-v1").length, 0,
 		"summary must not change routing preferences");
 	await session.prompt("/computer-use on");
+	assert.equal(activeDesktop().length, 17, `expected ON baseline, got ${activeDesktop().join(", ")}`);
+	for (const name of ["desktop_launch_app", "desktop_observe", "desktop_batch", "desktop_request_user", "desktop_visual_permission"])
+		assert.ok(activeDesktop().includes(name), `${name} is required in the ON baseline`);
+	for (const name of ["desktop_screenshot", "desktop_inspect_visual", "desktop_model_phase", "desktop_drag", "desktop_type", "desktop_dirty_regions"])
+		assert.ok(!activeDesktop().includes(name), `${name} must stay inactive until eligible`);
+	assert.deepEqual(session.getActiveToolNames().filter(name => !name.startsWith("desktop_")), otherTools,
+		"mode changes preserve unrelated active tools");
 	assert.equal((await toolCall("desktop_observe", "on-observe"))?.block, undefined, "ON allows semantic observation");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, true);
 	const onPrompt = await session.extensionRunner.emitBeforeAgentStart("Провери календара", undefined, { cwd, sections: { other: "keep" } });
 	assert.match(onPrompt.systemPromptOptions.sections.computer_use_mode, /desktop_\* tools only/);
+	assert.match(onPrompt.systemPromptOptions.sections.computer_use_mode, /desktop_visual_permission/);
+	assert.match(onPrompt.systemPromptOptions.sections.computer_use_mode, /uncertain input/);
+	assert.equal(onPrompt.systemPromptOptions.sections.computer_use_mode.split("For the user's requested desktop task").length, 2,
+		"saved-login policy occurs once in the ON system section");
 	assert.equal(onPrompt.systemPromptOptions.sections.other, "keep");
+	// Real resource-loaded extension callbacks: permission changes declarations only.
+	// No image tool is executed and the fixture has no daemon or model credentials.
+	const region = { x: 5, y: 6, width: 70, height: 50 };
+	const grantParams = { basis: "explicit_user_request", reason: "The user asked for a screenshot of this small region",
+		checks: [], capture: "desktop_screenshot", target: region };
+	const permission = loadedExtension.tools.get("desktop_visual_permission")?.definition;
+	assert.ok(permission, "model-only permission is registered in the real resource loader");
+	const grantResult = await permission.execute("real-permit", grantParams, undefined, undefined, { signal: undefined });
+	assert.equal(JSON.parse(grantResult.content[0].text).single_use, true);
+	assert.equal(activeDesktop().length, 18, "successful grant adds exactly one capture declaration");
+	assert.ok(activeDesktop().includes("desktop_screenshot") && !activeDesktop().includes("desktop_inspect_visual"));
+	assert.equal((await toolCall("desktop_observe", "semantic-after-grant"))?.block, undefined);
+	await session.extensionRunner.emit({ type: "tool_execution_end", toolCallId: "semantic-after-grant",
+		toolName: "desktop_observe", result: undefined, isError: false });
+	assert.ok(activeDesktop().includes("desktop_screenshot"), "semantic observation does not withdraw pending capture");
+	const captureGate = await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "real-capture-gate",
+		toolName: "desktop_screenshot", input: region });
+	assert.equal(captureGate?.block, undefined, "the exact permitted crop passes the hard tool_call gate");
+	assert.ok(activeDesktop().includes("desktop_screenshot"), "keep declaration until tool_execution_end");
+	await session.extensionRunner.emit({ type: "tool_execution_end", toolCallId: "real-capture-gate",
+		toolName: "desktop_screenshot", result: undefined, isError: false });
+	assert.equal(activeDesktop().length, 17, "completion withdraws the one-shot capture declaration");
+	assert.ok(!activeDesktop().includes("desktop_screenshot"));
+	assert.match((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "real-reuse",
+		toolName: "desktop_screenshot", input: region }))?.reason ?? "", /Visual capture blocked/);
+	const abortGrant = new AbortController();
+	await permission.execute("real-abort", grantParams, abortGrant.signal, undefined, { signal: undefined });
+	assert.equal(activeDesktop().length, 18);
+	abortGrant.abort();
+	assert.equal(activeDesktop().length, 17, "abort withdraws an unused capture declaration");
+	assert.match((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "real-abort-gate",
+		toolName: "desktop_screenshot", input: region }))?.reason ?? "", /Visual capture blocked/);
+	assert.equal(existsSync(process.env.COMPUTER_USE_SOCKET), false, "grant and gate never start a daemon");
 	await session.reload(); // Same session: persisted boolean restores without model/desktop work.
 	const restored = await session.extensionRunner.emitBeforeAgentStart("Провери waiting list", undefined, { cwd });
 	assert.match(restored.systemPromptOptions.sections.computer_use_mode, /Computer use mode is ON/);
+	assert.equal(activeDesktop().length, 17, "reload restores the ON baseline, not optional captures");
 	await session.prompt("/computer-use toggle");
 	const offPrompt = await session.extensionRunner.emitBeforeAgentStart("обикновен въпрос", undefined, { cwd });
 	assert.equal(offPrompt.systemPromptOptions.sections.computer_use_mode, undefined);
+	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"], "toggle OFF withdraws observations");
+	assert.equal((await toolCall("desktop_stop", "off-stop"))?.block, undefined, "emergency Stop is available while OFF");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, false);
 	await session.reload(); // Discard fixture activity; no settlement and no OS notification.
 	await session.prompt("/computer-use on");
+	assert.equal(activeDesktop().length, 17);
 	// Reproduce starting Pi on an existing branch with a stored ON entry.
 	await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
 	const freshStartup = await session.extensionRunner.emitBeforeAgentStart("ordinary prompt", undefined, { cwd });
 	assert.equal(freshStartup.systemPromptOptions.sections.computer_use_mode, undefined, "fresh Pi startup must default OFF even on a saved ON branch");
+	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"]);
 	assert.match((await toolCall("desktop_observe", "restarted-off"))?.reason ?? "", /OFF/,
 		"startup reset also restores the OFF tool gate");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, false);
@@ -126,7 +176,7 @@ try {
 	assert.deepEqual(extensionErrors, [], "real event handlers must not fail");
 	assert.equal(session.messages.length, messageCount, "help/mode commands must not start an agent turn");
 	assert.equal(existsSync(process.env.COMPUTER_USE_SOCKET), false, "load/help/mode must not start a daemon");
-	console.log(`Real Pi extension load passed: /computer-use help, models summary, toggle, default OFF startup, prompt injection and reload persistence, ${desktopNames.length} model-active desktop tools; no daemon, notification or model call.`);
+	console.log(`Real Pi extension load passed: 24 registered desktop tools, 3 OFF/17 ON active, help, mode toggle, default OFF startup, system-only prompt rules and reload persistence; no daemon, notification or model call.`);
 } finally {
 	session?.dispose();
 	if (previousSocket === undefined) delete process.env.COMPUTER_USE_SOCKET;

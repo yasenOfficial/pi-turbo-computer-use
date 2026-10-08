@@ -185,6 +185,7 @@ export class ComputerUseRouting {
 		}
 		this.label(ctx);
 	}
+	isHybrid(): boolean { return this.preference.hybrid; }
 	summary(ctx: ExtensionContext): string {
 		const p = this.preference;
 		return `Models: ${p.hybrid ? "hybrid" : "single"}; account ${ctx.model?.provider ?? "unknown"}; Sol ${p.sol?.id ?? "not selected"}; Luna ${p.luna?.id ?? "not selected"}; current ${ctx.model?.id ?? "unknown"}; phase ${this.task?.active ? this.task.phase : "idle"}. Use /computer-use models hybrid or single.`;

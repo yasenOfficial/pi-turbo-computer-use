@@ -6,7 +6,8 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 
 ## Features
 
-- **24 model-facing tools:** semantic observe/diffs/inspection, UI history search, verified focus, native GIO app launch, text, input, batches, waits, bounded captures, dirty rectangles, metrics, emergency Stop, user handoff, single-use visual permission, and model-phase handoff.
+- **24 registered desktop tools**, with a smaller model loadout: **3 while OFF**, **17 basic tools while ON**, plus the phase tool in hybrid. A capture tool is declared only after its exact visual grant; other non-desktop tools are preserved. Convenience drag/double-click operations stay available inside batch rather than duplicate declarations.
+- **Action + verification in one batch:** wait for a transition, then assert exact live name/value/enabled/visible/focused fields. Default failure stops later steps; assertions do not read password values.
 - Optional **visible Sol → Luna routing in the same session**: Sol plans, Luna executes, and one explicit difficult-blocker escalation returns to Sol. No nested model or classifier calls.
 - `/computer-use on`, `off`, and `toggle`. **OFF blocks desktop observation and actions**, including task submission; only emergency Stop and metadata-only ping/metrics remain available. OFF at fresh Pi startup; `/reload` preserves the chosen mode.
 - An ON bar with hybrid/single model information, current phase, a live whole-run timer and last duration. Routing information is visible **only beside Computer use ON**, not as a virtual model in Pi's standard footer. Toggle/timing state is session-local; the physical desktop and emergency Stop are shared.
@@ -113,6 +114,26 @@ Existing Pi session
 
 The socket defaults to `$XDG_RUNTIME_DIR/pi-computer.sock`. Required safety capabilities prevent observing through an unsafe legacy daemon. The daemon never implicitly requests AT-SPI `Properties.GetAll`, avoiding a reproduced Chromium bridge abort. Native launch acknowledgment is **dispatch accepted**, not window readiness. Input timeout/disconnect outcomes are uncertain and must never be replayed automatically.
 
+## Fewer round trips and bounded semantic reads
+
+AT-SPI traversal prioritizes a uniquely identified active window before background branches consume the 600-node budget. Showing dialogs and verified Cinnamon popups have their own foreground lane; unknown or ambiguous titles keep the conservative walk. Depth-24 and 600-node bounds remain, so a sufficiently large foreground subtree can still omit controls.
+
+`desktop_batch` supports `assert` for an immediate exact semantic check. Use a preceding `wait` for asynchronous transitions. Assertions refresh AT-SPI, require a unique target and fail on unreadable values; `value:null` is not a successful check if the value read failed. For example:
+
+```json
+{"actions":[
+  {"type":"set_text","target":{"id":"n42"},"text":"example.txt"},
+  {"type":"assert","target":{"id":"n42"},"expected":{"value":"example.txt","enabled":true}},
+  {"type":"click","target":{"name":"Save","role":"push button"}},
+  {"type":"wait","condition":{"name":"Ready"},"timeout_ms":3000},
+  {"type":"assert","target":{"name":"Ready","role":"label"},"expected":{"visible":true}}
+]}
+```
+
+IDs/names above are examples, not live controls. Batch-wide malformed assertions reject before any action, and mismatches retain partial results without rollback. Each assertion currently forces a fresh bounded scan: it saves separate model follow-ups, not necessarily native scan time.
+
+The ON rules are injected once in the system section; `/computer-use <task>` sends only the task text, avoiding repeated full rules in user history. Prefer semantic deltas/targeted waits rather than repeated full observations. No history is silently discarded, and no speed/quota improvement is claimed without task-level measurement.
+
 ## Screenshots, quota, and limits
 
 Use **AT-SPI, X11 window metadata, and GIO first**. Search omitted controls, inspect live nodes, batch verified actions, and verify text/state semantically. An image is allowed only for an **explicit user screenshot request** or a concrete blocker remaining after bounded semantic attempts.
@@ -162,6 +183,8 @@ node tests/test-computer-use-routing.mjs
 node tests/test-real-pi-routing.mjs
 node tests/test-visual-policy.mjs
 node tests/test-computer-use-safety-gates.mjs
+node tests/test-computer-use-loadout.mjs
+node tests/test-batch-assertions.mjs
 node tests/test-daemon-autostart.mjs
 node tests/test-daemon-autostart-real.mjs
 node tests/test-daemon-upgrade.mjs

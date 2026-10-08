@@ -102,6 +102,13 @@ fn is_text_control(role: &str, states: Option<&[u32]>) -> bool {
     role == "entry" || (role == "text" && states.is_some_and(|s| has_state(s, EDITABLE)))
 }
 
+// A failed attempted read is different from a verified absent interface or
+// a successful empty string. Only the boolean is published as diagnostics.
+fn attempted_value<T>(value: Option<T>) -> (Option<T>, bool) {
+    let failed = value.is_none();
+    (value, failed)
+}
+
 // Only explicit non-showing popup/choice roles are safe to collapse. In
 // particular, a GTK panel or scrolled window with no extents (or an unreliable
 // SHOWING flag) may still contain the live source view. Keep the root node so
@@ -131,24 +138,159 @@ fn defer_descendants(role: &str) -> bool {
     choice_branch(role) || role == "menu bar"
 }
 
-// A large *showing* selector can fill the deferred queue before a deeper
-// editor is discovered. Drop the least urgent queued cells to reserve slots
-// for the main tree; dangling child IDs are removed at snapshot commit.
-fn reserve_slot<T>(
-    normal: bool,
-    main: &VecDeque<T>,
-    deferred: &mut VecDeque<T>,
-    emitted: usize,
-) -> bool {
-    if normal {
-        while emitted + main.len() + deferred.len() >= MAX_NODES && !deferred.is_empty() {
-            deferred.pop_back();
-        }
-    }
-    emitted + main.len() + deferred.len() < MAX_NODES
+type Reference = (String, OwnedObjectPath);
+type ScanItem = (Reference, Option<String>, usize, Lane);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Lane {
+    Target,
+    Popup,
+    Background,
 }
 
-type Reference = (String, OwnedObjectPath);
+// Reserve slots at enqueue time, not after a background app has already
+// consumed the snapshot. Foreground lanes alternate so a showing dialog does
+// not disappear behind a large active frame (or vice versa). Choice cells are
+// visited after ordinary descendants, but before background windows.
+struct ScanQueue {
+    target: VecDeque<ScanItem>,
+    popup: VecDeque<ScanItem>,
+    background: VecDeque<ScanItem>,
+    choices: VecDeque<ScanItem>,
+    background_choices: VecDeque<ScanItem>,
+    next_popup: bool,
+}
+
+impl ScanQueue {
+    fn new(root: ScanItem) -> Self {
+        Self {
+            target: VecDeque::new(),
+            popup: VecDeque::new(),
+            background: VecDeque::from([root]),
+            choices: VecDeque::new(),
+            background_choices: VecDeque::new(),
+            next_popup: false,
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.target.len()
+            + self.popup.len()
+            + self.background.len()
+            + self.choices.len()
+            + self.background_choices.len()
+    }
+
+    #[cfg(test)]
+    fn push(&mut self, item: ScanItem, choice: bool, emitted: usize) -> bool {
+        self.push_ordered(item, choice, emitted, None)
+    }
+
+    // `group_offset` is the number of accepted siblings of this parent.
+    // Insert the group together at the head of its lane, in AT-SPI order.
+    fn push_ordered(
+        &mut self,
+        item: ScanItem,
+        choice: bool,
+        emitted: usize,
+        group_offset: Option<usize>,
+    ) -> bool {
+        let lane = item.3;
+        if lane == Lane::Background && !choice {
+            while emitted + self.len() >= MAX_NODES && self.background_choices.pop_back().is_some()
+            {
+            }
+        } else if lane != Lane::Background {
+            while emitted + self.len() >= MAX_NODES {
+                if self.background.pop_back().is_some() {
+                    continue;
+                }
+                if self.background_choices.pop_back().is_some() || self.choices.pop_back().is_some()
+                {
+                    continue;
+                }
+                // Selector cells never displace ordinary foreground paths.
+                if choice {
+                    break;
+                }
+                // Only the first child of a deeper, already visited branch
+                // may reclaim its *later* queued siblings. A later child must
+                // not replace an earlier unvisited child when the cap fills.
+                if item.2 <= 3 || group_offset != Some(0) {
+                    break;
+                }
+                let own = match lane {
+                    Lane::Target => &mut self.target,
+                    Lane::Popup => &mut self.popup,
+                    Lane::Background => unreachable!(),
+                };
+                if own.len() > 1 && own.pop_back().is_some() {
+                    continue;
+                }
+                // Never steal a queued branch from the other foreground lane.
+                break;
+            }
+        }
+        if emitted + self.len() >= MAX_NODES {
+            return false;
+        }
+        if choice {
+            if lane == Lane::Background {
+                self.background_choices.push_back(item);
+            } else {
+                self.choices.push_back(item);
+            }
+        } else {
+            match lane {
+                // Keep the first level below a window in order, but pursue
+                // its deeper controls ahead of a wide sibling fanout. Insert
+                // each sibling at increasing indices instead of reversing it.
+                Lane::Target if item.2 > 3 => self
+                    .target
+                    .insert(group_offset.unwrap_or(0).min(self.target.len()), item),
+                Lane::Popup if item.2 > 3 => self
+                    .popup
+                    .insert(group_offset.unwrap_or(0).min(self.popup.len()), item),
+                Lane::Target => self.target.push_back(item),
+                Lane::Popup => self.popup.push_back(item),
+                Lane::Background => self.background.push_back(item),
+            }
+        }
+        true
+    }
+
+    fn pop(&mut self) -> Option<ScanItem> {
+        if !self.target.is_empty() && !self.popup.is_empty() {
+            let item = if self.next_popup {
+                self.popup.pop_front()
+            } else {
+                self.target.pop_front()
+            };
+            self.next_popup = !self.next_popup;
+            return item;
+        }
+        self.target
+            .pop_front()
+            .or_else(|| self.popup.pop_front())
+            .or_else(|| self.choices.pop_front())
+            .or_else(|| self.background.pop_front())
+            .or_else(|| self.background_choices.pop_front())
+    }
+}
+
+// A title is a hint, never permission to narrow an ambiguous or unknown
+// desktop. Only one selected top-level window with an exact title may claim
+// the foreground lane; all other cases retain the original bounded walk.
+fn unique_title_match(title: Option<&str>, names: &[Option<String>]) -> Option<usize> {
+    let title = title.filter(|t| background_hint(Some(t)))?;
+    let mut matches = names
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| name.as_deref() == Some(title))
+        .map(|(index, _)| index);
+    let first = matches.next()?;
+    matches.next().is_none().then_some(first)
+}
 
 struct WindowCandidate {
     app: Reference,
@@ -358,6 +500,7 @@ pub struct Accessibility {
     ids: NodeIds,
     notify: Arc<Notify>,
     last_background_hint: Option<bool>,
+    last_active_title: Option<String>,
     reader_task: tokio::task::JoinHandle<()>,
 }
 
@@ -477,6 +620,7 @@ impl Accessibility {
             ids: NodeIds::default(),
             notify,
             last_background_hint: None,
+            last_active_title: None,
             reader_task,
         })
     }
@@ -486,6 +630,7 @@ impl Accessibility {
     }
     pub fn needs_refresh(&self, active_title: Option<&str>) -> bool {
         self.last_background_hint != Some(background_hint(active_title))
+            || self.last_active_title.as_deref() != active_title
     }
     pub fn invalidate(&self) {
         enqueue(&self.pending, Change::Full);
@@ -501,12 +646,14 @@ impl Accessibility {
         if changes.is_empty()
             && cache.current().generation != 0
             && self.last_background_hint == Some(hint)
+            && self.last_active_title.as_deref() == active_title
         {
             return Ok(());
         }
         if cache.current().generation == 0
             || changes.contains(&Change::Full)
             || self.last_background_hint != Some(hint)
+            || self.last_active_title.as_deref() != active_title
         {
             return self.full_refresh(cache, active_title).await;
         }
@@ -557,6 +704,7 @@ impl Accessibility {
         match self.scan(active_title).await {
             Ok((root, nodes)) => {
                 self.last_background_hint = Some(background_hint(active_title));
+                self.last_active_title = active_title.map(str::to_owned);
                 cache.update(root, nodes);
                 Ok(())
             }
@@ -620,17 +768,18 @@ impl Accessibility {
             }
             ChangeKind::Value => {
                 let role = node.role.as_str();
-                let interface =
-                    if is_text_control(role, None) || (role == "text" && node.value.is_some()) {
-                        TEXT
-                    } else if matches!(role, "slider" | "spin button") {
-                        VALUE
-                    } else {
-                        bail!("untracked value");
-                    };
+                let interface = if is_text_control(role, None)
+                    || (role == "text" && (node.value.is_some() || node.value_read_failed))
+                {
+                    TEXT
+                } else if matches!(role, "slider" | "spin button") {
+                    VALUE
+                } else {
+                    bail!("untracked value");
+                };
                 // A scan without a value could mean the interface was absent;
                 // do not invent a field on a node without verifying its shape.
-                if node.value.is_none() {
+                if node.value.is_none() && !node.value_read_failed {
                     bail!("value not cached");
                 }
                 let value_proxy = timeout(
@@ -645,6 +794,7 @@ impl Accessibility {
                         timeout(CALL_TIMEOUT, value_proxy.get_property("CurrentValue")).await??;
                     number.to_string()
                 });
+                nodes[index].value_read_failed = false;
             }
             ChangeKind::Bounds => {
                 let component = timeout(
@@ -854,8 +1004,10 @@ impl Accessibility {
         }
         let selected = selected_windows(&windows);
         let mut identities = Vec::new();
+        let mut identities_complete = true;
+        let mut window_names = vec![None; selected.len()];
         if background_hint(active_title) {
-            for &index in &selected {
+            for (position, &index) in selected.iter().enumerate() {
                 let candidate = &windows[index];
                 let app_name = async {
                     let proxy = atspi_proxy(
@@ -883,9 +1035,12 @@ impl Accessibility {
                     timeout(CALL_TIMEOUT, window_name)
                 );
                 if let (Ok(Ok(app)), Ok(Ok(name))) = (app, name) {
+                    window_names[position] = Some(name.clone());
                     identities.push((app, candidate.role.as_str(), name));
                 } else {
-                    break;
+                    // Unknown identity must not narrow the scan or the
+                    // desktop-only fallback, but other titles remain useful.
+                    identities_complete = false;
                 }
             }
         }
@@ -893,16 +1048,39 @@ impl Accessibility {
             .iter()
             .map(|(app, role, name)| (app.as_str(), *role, name.as_str()))
             .collect();
-        let prune_desktop = identities.len() == selected.len()
+        let prune_desktop = identities_complete
+            && identities.len() == selected.len()
             && background_desktop_only(
                 active_title,
                 &identities,
                 selected.iter().any(|&i| windows[i].shell_menu),
             );
+        // A failed identity read may be another copy of the same title.
+        // Never demote such an unknown window behind a purported unique match.
+        let target = identities_complete
+            .then(|| unique_title_match(active_title, &window_names))
+            .flatten();
         let mut selected_children: HashMap<Reference, Vec<Reference>> = HashMap::new();
+        let mut lanes: HashMap<Reference, Lane> = HashMap::new();
         let mut selected_apps = Vec::new();
-        for index in selected {
+        for (position, index) in selected.into_iter().enumerate() {
             let candidate = &windows[index];
+            let lane = if target == Some(position) {
+                Lane::Target
+            } else if target.is_some()
+                && candidate.showing
+                && (candidate.shell_menu
+                    || matches!(candidate.role.as_str(), "dialog" | "alert" | "file chooser"))
+            {
+                Lane::Popup
+            } else {
+                Lane::Background
+            };
+            lanes.insert(candidate.window.clone(), lane);
+            let app_lane = lanes.entry(candidate.app.clone()).or_insert(lane);
+            if lane == Lane::Target || (lane == Lane::Popup && *app_lane == Lane::Background) {
+                *app_lane = lane;
+            }
             if !selected_apps.contains(&candidate.app) {
                 selected_apps.push(candidate.app.clone());
             }
@@ -915,15 +1093,12 @@ impl Accessibility {
             }
         }
         selected_children.insert(root_ref.clone(), selected_apps);
-        let mut queue = VecDeque::from([(root_ref, None, 0usize)]);
-        let mut deferred = VecDeque::new();
+        let mut queue = ScanQueue::new((root_ref, None, 0usize, Lane::Background));
         let mut seen = HashSet::new();
         let mut nodes = Vec::new();
         let mut references = HashMap::new();
         let mut root = None;
-        while let Some(((bus, path), parent, depth)) =
-            queue.pop_front().or_else(|| deferred.pop_front())
-        {
+        while let Some(((bus, path), parent, depth, lane)) = queue.pop() {
             let id = self.ids.id(&bus, path.as_str());
             if seen.contains(&id) {
                 continue;
@@ -960,14 +1135,7 @@ impl Accessibility {
                 None
             };
             let children: Vec<Reference> = if depth < MAX_DEPTH
-                && nodes.len()
-                    + queue.len()
-                    + if defer_descendants(&role) {
-                        deferred.len()
-                    } else {
-                        0
-                    }
-                    < MAX_NODES
+                && (lane != Lane::Background || nodes.len() + queue.len() < MAX_NODES)
                 && !prune_descendants(&role, states.as_deref())
             {
                 if let Some(selected) = selected_children.get(&(bus.clone(), path.clone())) {
@@ -1013,47 +1181,43 @@ impl Accessibility {
             } else {
                 None
             };
+            let mut value_read_failed = interfaces.is_none()
+                && (text_control || matches!(role.as_str(), "slider" | "spin button"));
             let value = if text_control
                 && interfaces
                     .as_ref()
                     .is_some_and(|i| i.iter().any(|s| s == TEXT))
             {
-                match timeout(
-                    CALL_TIMEOUT,
-                    atspi_proxy(&self.connection, bus.as_str(), path.as_str(), TEXT),
-                )
-                .await
-                {
-                    Ok(Ok(text_proxy)) => timeout(
-                        CALL_TIMEOUT,
-                        text_proxy.call::<_, _, String>("GetText", &(0i32, -1i32)),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok),
-                    _ => None,
-                }
+                let read = async {
+                    let text_proxy =
+                        atspi_proxy(&self.connection, bus.as_str(), path.as_str(), TEXT).await?;
+                    text_proxy
+                        .call::<_, _, String>("GetText", &(0i32, -1i32))
+                        .await
+                };
+                let (value, failed) =
+                    attempted_value(timeout(CALL_TIMEOUT, read).await.ok().and_then(Result::ok));
+                value_read_failed = failed;
+                value
             } else if matches!(role.as_str(), "slider" | "spin button")
                 && interfaces
                     .as_ref()
                     .is_some_and(|i| i.iter().any(|s| s == VALUE))
             {
-                match timeout(
-                    CALL_TIMEOUT,
-                    atspi_proxy(&self.connection, bus.as_str(), path.as_str(), VALUE),
-                )
-                .await
-                {
-                    Ok(Ok(value_proxy)) => timeout(
-                        CALL_TIMEOUT,
-                        value_proxy.get_property::<f64>("CurrentValue"),
-                    )
-                    .await
-                    .ok()
-                    .and_then(Result::ok)
-                    .map(|number| number.to_string()),
-                    _ => None,
-                }
+                let read = async {
+                    let value_proxy =
+                        atspi_proxy(&self.connection, bus.as_str(), path.as_str(), VALUE).await?;
+                    value_proxy.get_property::<f64>("CurrentValue").await
+                };
+                let (value, failed) = attempted_value(
+                    timeout(CALL_TIMEOUT, read)
+                        .await
+                        .ok()
+                        .and_then(Result::ok)
+                        .map(|number| number.to_string()),
+                );
+                value_read_failed = failed;
+                value
             } else {
                 None
             };
@@ -1100,23 +1264,34 @@ impl Accessibility {
                 root = Some(id.clone());
             }
             let mut child_ids = Vec::new();
+            // Selected apps and windows are already known. Rank their roots
+            // before enqueueing so hundreds of other desktop roots cannot
+            // occupy the cap ahead of the active frame.
+            let mut children = children;
+            if selected_children.contains_key(&(bus.clone(), path.clone())) {
+                children.sort_by_key(|child| match lanes.get(child).copied().unwrap_or(lane) {
+                    Lane::Target => 0,
+                    Lane::Popup => 1,
+                    Lane::Background => 2,
+                });
+            }
+            let mut group_offset = 0;
             for (child_bus, child_path) in children {
-                if !reserve_slot(
-                    !defer_descendants(&role),
-                    &queue,
-                    &mut deferred,
-                    nodes.len(),
-                ) {
-                    break;
-                }
-                let child_id = self.ids.id(&child_bus, child_path.as_str());
+                let child_ref = (child_bus, child_path);
+                let child_id = self.ids.id(&child_ref.0, child_ref.1.as_str());
                 if !seen.contains(&child_id) {
-                    child_ids.push(child_id);
-                    let next = ((child_bus, child_path), Some(id.clone()), depth + 1);
-                    if defer_descendants(&role) {
-                        deferred.push_back(next);
-                    } else {
-                        queue.push_back(next);
+                    let child_lane = lanes.get(&child_ref).copied().unwrap_or(lane);
+                    let next = (child_ref, Some(id.clone()), depth + 1, child_lane);
+                    if queue.push_ordered(
+                        next,
+                        defer_descendants(&role),
+                        nodes.len() + 1,
+                        Some(group_offset),
+                    ) {
+                        child_ids.push(child_id);
+                        if child_lane == lane && depth + 1 > 3 && !defer_descendants(&role) {
+                            group_offset += 1;
+                        }
                     }
                 }
             }
@@ -1129,6 +1304,7 @@ impl Accessibility {
                 role,
                 bounds,
                 value,
+                value_read_failed,
                 enabled: states.as_ref().map(|s| has_state(s, ENABLED)),
                 visible: states.as_ref().map(|s| has_state(s, SHOWING)),
                 focused: states.as_ref().map(|s| has_state(s, FOCUSED)),
@@ -1525,6 +1701,51 @@ mod tests {
     }
 
     #[test]
+    fn failed_value_reads_are_uncertain_and_successful_empty_reads_clear_marker() {
+        let (value, failed) = attempted_value::<String>(None);
+        assert_eq!(value, None);
+        assert!(failed);
+        let (value, failed) = attempted_value(Some(String::new()));
+        assert_eq!(value.as_deref(), Some(""));
+        assert!(!failed);
+        let (number, failed) = attempted_value::<f64>(None);
+        assert!(number.is_none() && failed);
+        let (number, failed) = attempted_value(Some(0.0));
+        assert_eq!(number, Some(0.0));
+        assert!(!failed);
+
+        // Marking a failed read is a semantic node change, even if the prior
+        // scan also had value: None; a later successful read clears it.
+        let mut cache = Cache::new();
+        let mut node = Node {
+            id: "n1".into(),
+            parent: None,
+            children: vec![],
+            name: "Input".into(),
+            role: "entry".into(),
+            bounds: None,
+            value: None,
+            value_read_failed: false,
+            enabled: None,
+            visible: None,
+            focused: None,
+            actions: None,
+        };
+        cache.update(Some("n1".into()), vec![node.clone()]);
+        let before = cache.current().generation;
+        node.value_read_failed = true;
+        cache.update(Some("n1".into()), vec![node.clone()]);
+        let delta = cache.observe(Some(before)).1.unwrap();
+        assert_eq!(delta.changed[0], node);
+        assert_eq!(delta.changed[0].value, None);
+        node.value = Some(String::new());
+        node.value_read_failed = false;
+        let before = cache.current().generation;
+        cache.update(Some("n1".into()), vec![node.clone()]);
+        assert_eq!(cache.observe(Some(before)).1.unwrap().changed, vec![node]);
+    }
+
+    #[test]
     fn parses_at_spi_state_words() {
         let words = [
             1 << ACTIVE | 1 << ENABLED | 1 << FOCUSED | 1 << SHOWING,
@@ -1576,14 +1797,15 @@ mod tests {
 
     #[test]
     fn saturated_selector_queue_yields_to_main_editor_path() {
-        let main = VecDeque::from(["editor ancestor"]);
-        let mut deferred = VecDeque::from(vec!["selector cell"; MAX_NODES - 2]);
-        assert!(reserve_slot(true, &main, &mut deferred, 1));
-        assert_eq!(deferred.len(), MAX_NODES - 3);
-        deferred.push_back("selector cell");
-        assert!(!reserve_slot(false, &main, &mut deferred, 1));
-        let mut deferred = VecDeque::<&str>::new();
-        assert!(!reserve_slot(true, &main, &mut deferred, MAX_NODES - 1));
+        let mut queue = ScanQueue::new(fixture_item("root", 0, Lane::Background));
+        queue.pop();
+        queue.push(fixture_item("ancestor", 2, Lane::Target), false, 1);
+        for n in 0..MAX_NODES {
+            queue.push(fixture_item(&format!("cell{n}"), 3, Lane::Target), true, 1);
+        }
+        assert!(queue.push(fixture_item("editor", 4, Lane::Target), false, 1));
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/editor");
+        assert!(queue.len() < MAX_NODES);
     }
 
     #[test]
@@ -1687,6 +1909,176 @@ mod tests {
         }
         assert!(CINNAMON_PROBE_NODES < MAX_NODES);
         assert!(CINNAMON_PROBE_DEPTH < MAX_DEPTH);
+    }
+
+    fn fixture_item(name: &str, depth: usize, lane: Lane) -> ScanItem {
+        (
+            (
+                "fixture".into(),
+                OwnedObjectPath::try_from(format!("/{name}")).unwrap(),
+            ),
+            None,
+            depth,
+            lane,
+        )
+    }
+
+    #[test]
+    fn exact_unique_title_only_claims_foreground() {
+        let names = [Some("Editor".into()), Some("Save".into()), None];
+        assert_eq!(unique_title_match(Some("Editor"), &names), Some(0));
+        for title in [
+            None,
+            Some(""),
+            Some("Desktop"),
+            Some("editor"),
+            Some("Unknown"),
+        ] {
+            assert_eq!(unique_title_match(title, &names), None);
+        }
+        assert_eq!(
+            unique_title_match(
+                Some("Editor"),
+                &[Some("Editor".into()), Some("Editor".into())]
+            ),
+            None
+        );
+    }
+
+    #[test]
+    fn deeper_foreground_siblings_keep_at_spi_order_even_when_full() {
+        let mut queue = ScanQueue::new(fixture_item("root", 0, Lane::Background));
+        queue.pop();
+        for n in 0..MAX_NODES {
+            queue.push(
+                fixture_item(&format!("background{n}"), 1, Lane::Background),
+                false,
+                1,
+            );
+        }
+        for n in 0..4 {
+            assert!(queue.push_ordered(
+                fixture_item(&format!("sibling{n}"), 4, Lane::Target),
+                false,
+                1,
+                Some(n),
+            ));
+        }
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/sibling0");
+        assert!(queue.push_ordered(fixture_item("control", 5, Lane::Target), false, 2, Some(0)));
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/control");
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/sibling1");
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/sibling2");
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/sibling3");
+        assert!(queue.len() + 6 <= MAX_NODES);
+
+        // When foreground siblings themselves fill the cap, a late child
+        // cannot replace the first unvisited branch at the back of the queue.
+        let mut queue = ScanQueue::new(fixture_item("root", 0, Lane::Background));
+        queue.pop();
+        for n in 0..MAX_NODES - 1 {
+            assert!(queue.push_ordered(
+                fixture_item(&format!("sibling{n}"), 4, Lane::Target),
+                false,
+                1,
+                Some(n),
+            ));
+        }
+        assert!(!queue.push_ordered(
+            fixture_item("late", 4, Lane::Target),
+            false,
+            1,
+            Some(MAX_NODES - 1),
+        ));
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/sibling0");
+    }
+
+    #[test]
+    fn unknown_title_keeps_bounded_background_walk_and_defers_choices() {
+        let mut queue = ScanQueue::new(fixture_item("root", 0, Lane::Background));
+        queue.pop();
+        assert!(queue.push(fixture_item("frame", 1, Lane::Background), false, 1));
+        assert!(queue.push(fixture_item("cell", 1, Lane::Background), true, 1));
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/frame");
+        assert_eq!(queue.pop().unwrap().0 .1.as_str(), "/cell");
+        for n in 0..MAX_NODES * 2 {
+            queue.push(
+                fixture_item(&format!("app{n}"), 1, Lane::Background),
+                false,
+                1,
+            );
+        }
+        assert_eq!(queue.len(), MAX_NODES - 1);
+        assert_eq!(unique_title_match(None, &[Some("Editor".into())]), None);
+    }
+
+    #[test]
+    fn foreground_subtree_survives_background_roots_and_popup_is_retained() {
+        let mut queue = ScanQueue::new(fixture_item("root", 0, Lane::Background));
+        let root = queue.pop().unwrap();
+        assert_eq!(root.0 .1.as_str(), "/root");
+        // As in scan: rank selected application roots before enqueueing.
+        assert!(queue.push(fixture_item("editor_app", 1, Lane::Target), false, 1));
+        assert!(queue.push(fixture_item("dialog_app", 1, Lane::Popup), false, 1));
+        for n in 0..MAX_NODES * 2 {
+            queue.push(
+                fixture_item(&format!("background{n}"), 1, Lane::Background),
+                false,
+                1,
+            );
+        }
+        let mut visited = Vec::new();
+        while let Some(item) = queue.pop() {
+            let name = item.0 .1.as_str().to_owned();
+            let depth = item.2;
+            let lane = item.3;
+            visited.push(name.clone());
+            if name == "/editor_app" {
+                queue.push(
+                    fixture_item("editor_frame", 2, lane),
+                    false,
+                    visited.len() + 1,
+                );
+            } else if name == "/dialog_app" {
+                queue.push(fixture_item("dialog", 2, lane), false, visited.len() + 1);
+            } else if name == "/editor_frame" {
+                // Simulate a huge selected-window sibling fanout, followed by
+                // a deeper editor path. A full queue must not block expansion.
+                for n in 0..MAX_NODES {
+                    queue.push(
+                        fixture_item(&format!("panel{n}"), 3, lane),
+                        false,
+                        visited.len() + 1,
+                    );
+                }
+            } else if name == "/panel0" && depth < MAX_DEPTH {
+                queue.push_ordered(
+                    fixture_item("control", depth + 1, lane),
+                    false,
+                    visited.len() + 1,
+                    Some(0),
+                );
+            }
+            if visited.len() == MAX_NODES {
+                break;
+            }
+        }
+        assert!(
+            visited.contains(&"/control".to_owned()),
+            "active control must survive background and wide frame"
+        );
+        assert!(
+            visited.contains(&"/dialog".to_owned()),
+            "showing dialog must survive active frame"
+        );
+        let first_background = visited
+            .iter()
+            .position(|name| name.starts_with("/background"));
+        assert!(first_background
+            .is_none_or(|index| index > visited.iter().position(|n| n == "/control").unwrap()));
+        assert!(visited.len() <= MAX_NODES);
+        assert_eq!(MAX_DEPTH, 24);
+        assert_eq!(MAX_NODES, 600);
     }
 
     #[test]

@@ -1,10 +1,10 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import { computerUseMessage } from "./instructions.js";
 import type { ComputerUseMode } from "./mode.js";
 import type { ComputerUseRouting } from "./routing.js";
+import type { DesktopLoadout } from "./loadout.js";
 
 /** A command in the current Pi session; no daemon or agent activity at registration time. */
-export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseMode, routing?: ComputerUseRouting): void {
+export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseMode, routing?: ComputerUseRouting, loadout?: DesktopLoadout): void {
 	pi.registerCommand("computer-use", {
 		description: "Toggle persistent computer-use mode, or send a desktop task; no arguments for help",
 		getArgumentCompletions: (prefix) => {
@@ -17,13 +17,17 @@ export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseM
 				if (!routing) { ctx.ui.notify("Hybrid routing is unavailable in this extension runtime.", "warning"); return; }
 				if (task === "models") { ctx.ui.notify(routing.summary(ctx), "info"); return; }
 				if (!ctx.isIdle()) { ctx.ui.notify("Change routing only while Pi is idle; abort or wait for the current task first.", "warning"); return; }
-				try { ctx.ui.notify(await routing.command(task.slice(6).trim(), ctx), "info"); }
+				try {
+					ctx.ui.notify(await routing.command(task.slice(6).trim(), ctx), "info");
+					loadout?.sync(mode?.isEnabled() === true, routing.isHybrid());
+				}
 				catch (error) { ctx.ui.notify(error instanceof Error ? error.message : String(error), "error"); }
 				return;
 			}
 			if (["toggle", "on", "off"].includes(task) && mode) {
 				mode.setEnabled(task === "on" || (task === "toggle" && !mode.isEnabled()), ctx);
 				routing?.refreshLabel(ctx);
+				loadout?.sync(mode.isEnabled(), routing?.isHybrid());
 				ctx.ui.notify(`Computer use ${mode.isEnabled() ? "ON — пиши desktop задачите директно." : "OFF — desktop наблюдението и действията са блокирани."} Изключването не прекъсва текуща задача и не отменя emergency Stop.`, "info");
 				return;
 			}
@@ -46,7 +50,7 @@ export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseM
 				// ExtensionCommandContext does not expose sendUserMessage; the documented
 				// ExtensionAPI method is bound to this runtime/session. Explicit followUp
 				// avoids interrupting a busy run; idle sends start a normal user turn.
-				pi.sendUserMessage(computerUseMessage(args), ctx.isIdle() ? undefined : { deliverAs: "followUp" });
+				pi.sendUserMessage(args, ctx.isIdle() ? undefined : { deliverAs: "followUp" });
 			} catch (error) {
 				ctx.ui.notify(`Could not submit computer-use task: ${error instanceof Error ? error.message : String(error)}. Check this Pi session and try again.`, "error");
 			}
