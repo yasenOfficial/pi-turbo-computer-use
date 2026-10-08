@@ -72,6 +72,7 @@ Optional foreground start for diagnostics:
 /computer-use models hybrid         Select visible Sol → Luna routing
 /computer-use models single         Restore your original physical model
 /computer-use models status         Show routing targets and phase
+/computer-use models list           List authenticated Sol/Luna IDs (no changes)
 /computer-use status                Tool/mode status, not daemon connectivity
 /computer-use instructions          Show operating rules locally
 ```
@@ -86,7 +87,7 @@ For a user-only blocker, the agent calls `desktop_request_user`, explains the co
 
 ### Sol planning, Luna execution
 
-After `/reload`, select `/computer-use models hybrid`, then enable `/computer-use on`. The extension resolves authenticated physical targets from the runtime registry: the current Sol and its corresponding Luna, or an unambiguous same-provider Luna. Missing or ambiguous targets produce an error, not a guessed route. Configure exact targets if needed:
+After `/reload`, select `/computer-use models hybrid`, then enable `/computer-use on`. The extension resolves authenticated physical targets from the runtime registry: the current Sol and its corresponding Luna, or an unambiguous same-provider Luna. Missing or ambiguous targets produce an error, not a guessed route. Run `/computer-use models list` to see authenticated IDs, then configure exact targets if needed:
 
 ```text
 /computer-use models sol provider/model-sol

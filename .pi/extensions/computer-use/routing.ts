@@ -105,7 +105,7 @@ export class ComputerUseRouting {
 			if (family.id !== sol.id && models.some(m => same(ref(m), family))) luna = family;
 			else {
 				const candidates = models.filter(m => m.provider === sol!.provider && /-luna$/.test(m.id));
-				if (candidates.length !== 1) throw new Error(`Luna target ${candidates.length ? "ambiguous" : "unavailable"} for ${sol.provider}; configure models luna provider/id`);
+				if (candidates.length !== 1) throw new Error(`Luna target ${candidates.length ? "ambiguous" : "unavailable"} for ${sol.provider}; configure /computer-use models luna provider/id. ${candidates.length ? `Available: ${candidates.slice(0, 24).map(m => `${m.provider}/${m.id}`).join(", ")}` : "Use /computer-use models list to inspect authenticated targets."}`);
 				luna = ref(candidates[0]);
 			}
 		}
@@ -144,6 +144,13 @@ export class ComputerUseRouting {
 	/** args after `models `; parent owns slash command dispatch. */
 	async command(args: string, ctx: ExtensionContext): Promise<string> {
 		const text = args.trim();
+		if (text === "list") {
+			const provider = this.preference.sol?.provider ?? (!virtual(ctx.model) ? ctx.model?.provider : undefined);
+			const models = this.available(ctx).filter(m => /-(sol|luna)$/.test(m.id) && (!provider || m.provider === provider))
+				.map(m => `${m.provider}/${m.id}`).sort();
+			return models.length ? `Authenticated Sol/Luna targets${provider ? ` for ${provider}` : ""}:\n${models.slice(0, 24).join("\n")}${models.length > 24 ? "\nMore targets available in /model." : ""}\nConfigure: /computer-use models luna provider/id. This list does not change models or enable computer use.`
+				: `No authenticated Sol/Luna targets${provider ? ` for ${provider}` : ""}. Check /model; no model or computer-use setting was changed.`;
+		}
 		if (text === "status") return `Models: ${this.preference.hybrid ? "hybrid" : "single"}${typeof this.pi.registerVirtualModel !== "function" ? " (hybrid unavailable: upgrade Pi SDK for registerVirtualModel)" : ""}; Sol ${this.preference.sol ? `${this.preference.sol.provider}/${this.preference.sol.id}` : "auto"}; Luna ${this.preference.luna ? `${this.preference.luna.provider}/${this.preference.luna.id}` : "auto"}; phase ${this.task?.active ? this.task.phase : "idle"}.`;
 		if (text === "hybrid") {
 			if (typeof this.pi.registerVirtualModel !== "function") throw new Error("Computer-use hybrid requires a Pi SDK with registerVirtualModel (docs/virtual-models.md); upgrade Pi or use models single.");
@@ -175,7 +182,7 @@ export class ComputerUseRouting {
 			this.preference = { ...this.preference, [key]: target }; this.persist(); this.status(ctx);
 			return `${key} set to ${target.provider}/${target.id}.`;
 		}
-		throw new Error("Usage: models hybrid|single|status|sol provider/id|luna provider/id");
+		throw new Error("Usage: models hybrid|single|status|list|sol provider/id|luna provider/id");
 	}
 	beforeStart(event: BeforeAgentStartEvent, ctx: ExtensionContext): void {
 		this.dispatched = undefined;

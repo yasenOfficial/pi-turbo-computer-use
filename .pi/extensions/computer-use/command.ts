@@ -8,7 +8,7 @@ export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseM
 	pi.registerCommand("computer-use", {
 		description: "Toggle persistent computer-use mode, or send a desktop task; no arguments for help",
 		getArgumentCompletions: (prefix) => {
-			const values = ["toggle", "on", "off", "instructions", "status", "models hybrid", "models single", "models status", "models sol ", "models luna "].filter((value) => value.startsWith(prefix));
+			const values = ["toggle", "on", "off", "instructions", "status", "models hybrid", "models single", "models status", "models list", "models sol ", "models luna "].filter((value) => value.startsWith(prefix));
 			return values.length ? values.map((value) => ({ value, label: value })) : null;
 		},
 		handler: async (args, ctx) => {
@@ -33,7 +33,7 @@ export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseM
 				const tools = pi.getAllTools().filter(({ name }) => name.startsWith("desktop_"));
 				const active = new Set(pi.getActiveTools());
 				const enabled = tools.filter(({ name }) => active.has(name)).length;
-				ctx.ui.notify(`Computer-use: ${tools.length} registered desktop_* tools (${enabled} active). Mode: ${mode?.isEnabled() ? "ON" : "OFF"}. Daemon connectivity and input state not checked; use desktop_ping to check.\nUsage: /computer-use toggle (or on/off) controls direct desktop prompts and a persistent ON bar. OFF blocks desktop observations/actions except emergency Stop and metadata-only ping/metrics. /computer-use <task> requires ON (queued as follow-up if busy). Desktop notifications are sent at final settlement; blockers use Action required (desktop_request_user), user abort is silent. /computer-use models hybrid selects visible same-session Sol planning → Luna execution → one Sol escalation; models single restores the original model; models status shows configured targets. /computer-use instructions shows the rules; /computer-use status shows tool availability.`, "info");
+				ctx.ui.notify(`Computer-use: ${tools.length} registered desktop_* tools (${enabled} active). Mode: ${mode?.isEnabled() ? "ON" : "OFF"}. Daemon connectivity and input state not checked; use desktop_ping to check.\nUsage: /computer-use toggle (or on/off) controls direct desktop prompts and a persistent ON bar. OFF blocks desktop observations/actions except emergency Stop and metadata-only ping/metrics. /computer-use <task> requires ON (queued as follow-up if busy). Desktop notifications are sent at final settlement; blockers use Action required (desktop_request_user), user abort is silent. /computer-use models hybrid selects visible same-session Sol planning → Luna execution → one Sol escalation; models single restores the original model; models status shows configured targets; models list shows authenticated Sol/Luna IDs without changing anything. /computer-use instructions shows the rules; /computer-use status shows tool availability.`, "info");
 				return;
 			}
 			if (!mode?.isEnabled()) {
