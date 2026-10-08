@@ -15,8 +15,8 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 	const workflow = new DesktopWorkflow();
 	registerComputerUseTools(pi, workflow, new DesktopDaemonStartup());
 	const mode = new ComputerUseMode(pi);
-	const routing = new ComputerUseRouting(pi, mode);
 	const loadout = new DesktopLoadout(pi);
+	const routing = new ComputerUseRouting(pi, mode, available => loadout.setRoutingAvailable(available));
 	const debug = new ComputerUseDebug(pi, mode, routing);
 	registerComputerUseCommand(pi, mode, routing, loadout, debug);
 	registerComputerUseHandoff(pi, mode);

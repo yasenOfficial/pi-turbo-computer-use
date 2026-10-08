@@ -16,6 +16,7 @@ const CAPTURES = new Set(["desktop_screenshot", "desktop_inspect_visual"]);
 export class DesktopLoadout {
 	private enabled = false;
 	private hybrid = false;
+	private routingAvailable = true;
 	private capture?: string;
 
 	constructor(private readonly pi: Pick<ExtensionAPI, "getActiveTools" | "getAllTools" | "setActiveTools">) {}
@@ -25,6 +26,13 @@ export class DesktopLoadout {
 		this.enabled = enabled;
 		this.hybrid = hybrid;
 		this.capture = undefined;
+		this.apply();
+	}
+
+	/** Routing declarations only; never clears a pending visual permit or non-desktop tools. */
+	setRoutingAvailable(available: boolean): void {
+		if (this.routingAvailable === available) return;
+		this.routingAvailable = available;
 		this.apply();
 	}
 
@@ -45,7 +53,7 @@ export class DesktopLoadout {
 	private apply(): void {
 		const registered = new Set(this.pi.getAllTools().map(tool => tool.name));
 		const selected = this.enabled ? ON : OFF;
-		const desktop = [...selected, ...(this.enabled && this.hybrid ? ["desktop_model_phase"] : []),
+		const desktop = [...selected, ...(this.enabled && this.hybrid && this.routingAvailable ? ["desktop_model_phase"] : []),
 			...(this.enabled && this.capture ? [this.capture] : [])].filter(name => registered.has(name));
 		const active = this.pi.getActiveTools();
 		const next = [...active.filter(name => !name.startsWith("desktop_")), ...desktop];

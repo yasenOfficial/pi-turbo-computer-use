@@ -61,6 +61,50 @@ assert.equal(selections.length, 0);
 await before();
 assert.equal(current, sol10, "Sol selected before native first request");
 assert.match(labels.at(-1), /план: Sol/);
+const phaseInput = { messages: [
+	{ role: "system", content: "Unrelated core instructions", timestamp: 1,
+		sections: { computer_use_routing: "STALE PLAN", other: "keep" },
+		toolsAdded: [{ name: "read", description: "keep" }, { name: "desktop_model_phase", parameters: tool.parameters }],
+		toolsRemoved: [{ name: "other-old" }] },
+	{ role: "user", content: "PRIVATE TASK", timestamp: 2 },
+	{ role: "system", content: "Later system update", timestamp: 3,
+		sections: { computer_use_routing: "STALE SOL", another: "preserve" },
+		toolsAdded: [{ name: "desktop_model_phase", parameters: tool.parameters }, { name: "desktop_inspect" },
+			{ name: "desktop_model_phase", namespace: "other-extension", description: "Unrelated namespaced tool", parameters: { unrelated: true } }],
+		toolsRemoved: [{ name: "unrelated-removal" }] },
+	{ role: "toolResult", toolName: "desktop_observe", content: [{ type: "text", text: "private tool result" }] },
+] };
+const phaseView = () => routing.phaseContext(phaseInput, ctx).messages;
+const checkView = (messages, role, expectedPhase) => {
+	assert.equal(messages.length, phaseInput.messages.length, "no conversation history dropped");
+	assert.equal(messages[1], phaseInput.messages[1]); assert.equal(messages[3], phaseInput.messages[3]);
+	assert.equal(messages[0].content, "Unrelated core instructions");
+	assert.equal(messages[0].sections.other, "keep");
+	assert.equal(messages[2].content, "Later system update");
+	assert.equal(messages[2].sections.another, "preserve");
+	assert.equal("computer_use_routing" in messages[2].sections, false, "old Sol sections cannot override request phase");
+	assert.deepEqual(messages[0].toolsRemoved, [{ name: "other-old" }]);
+	assert.deepEqual(messages[2].toolsRemoved, [{ name: "unrelated-removal" }]);
+	assert.equal(messages[0].toolsAdded[0], phaseInput.messages[0].toolsAdded[0], "other tool untouched");
+	assert.equal(messages[2].toolsAdded.at(-1), phaseInput.messages[2].toolsAdded.at(-1),
+		"a namespaced tool with the same basename remains untouched");
+	assert.match(messages[0].sections.computer_use_routing, role);
+	assert.equal(messages[0].toolsAdded.find(t => t.name === "desktop_model_phase")?.parameters.properties.phase.const, expectedPhase);
+};
+const planView = phaseView();
+checkView(planView, /phase plan.*Sol/, "execute");
+assert.equal(planView[0].toolsAdded[1].parameters.required.includes("plan"), true);
+assert.equal(routing.phaseContext({ messages: planView }, ctx).messages[0].sections.computer_use_routing,
+	planView[0].sections.computer_use_routing, "request-local repeated transform is idempotent");
+assert.equal(phaseInput.messages[0].sections.computer_use_routing, "STALE PLAN", "persisted input was not changed");
+const forced = { messages: [{ role: "system", content: "Forced unrelated prompt", replace: true, timestamp: 7,
+	toolsAdded: [{ name: "read" }, { name: "desktop_model_phase", parameters: tool.parameters }] },
+	{ role: "user", content: "Private user request" }] };
+const forcedView = routing.phaseContext(forced, ctx).messages;
+assert.equal(forcedView[0].content, "Forced unrelated prompt", "never overwrite a forced system prompt");
+assert.equal(forcedView[0].replace, true);
+assert.match(forcedView[0].sections.computer_use_routing, /phase plan/);
+assert.equal(forcedView[1], forced.messages[1]);
 assert.equal(block("desktop_click"), true);
 assert.equal(block("desktop_batch"), true);
 assert.equal(block("desktop_launch_app", undefined, { query: "STM32CubeIDE" }), undefined, "Sol can discover installed apps without dispatch");
@@ -85,10 +129,16 @@ const switching = call({ phase: "execute", plan: "Inspect then act" });
 assert.equal(block("desktop_click"), true, "no companion input during model switch");
 release();
 const handedOff = await switching; pending = undefined;
-assert.match(handedOff.content[0].text, /query.*lookup does not launch.*verified returned app_id/);
-assert.match(handedOff.content[0].text, /Before technical user handoff.*escalate/);
+assert.match(handedOff.content[0].text, /Routing phase execute.*Luna.*preceding tool-call arguments.*never request execute again/);
+assert.match(handedOff.content[0].text, /lookup does not launch.*Never replay uncertain input.*one explicit verified escalation/);
+assert.equal(handedOff.content[0].text.includes("Inspect then act"), false, "tool result does not echo private plan");
+assert.deepEqual(handedOff.details, { phase: "execute" });
 assert.equal(current, luna10);
 assert.match(labels.at(-1), /изпълнява: Luna/);
+const executeView = phaseView();
+checkView(executeView, /phase execute.*Luna/, "escalate");
+assert.doesNotMatch(executeView[0].sections.computer_use_routing, /phase plan/);
+assert.equal(executeView[0].toolsAdded[1].parameters.required.includes("verified_state"), true);
 const switchCount = selections.length;
 await emit("tool_execution_end", { toolName: "desktop_click", isError: true });
 await emit("session_compact", {});
@@ -96,6 +146,7 @@ assert.equal(current, luna10, "tool errors and compaction do not escalate or cha
 assert.equal(selections.length, switchCount);
 assert.equal(block("desktop_click"), undefined);
 assert.equal(block("desktop_launch_app", undefined, { app_id: "xed.desktop" }), undefined, "Luna may launch after handoff");
+await assert.rejects(() => call({ phase: "execute", plan: "again" }), /Already executing on Luna/);
 assert.match(routing.guard({ toolName: "desktop_request_user", input: { reason: "technical", instructions: "Please fix it" } }, ctx)?.reason ?? "",
 	/Technical user handoff requires Sol review.*re-observe.*bounded materially different.*escalate.*No automatic escalation\/replay/);
 for (const reason of ["login", "mfa", "captcha", "approval", "clarification"])
@@ -111,11 +162,23 @@ await assert.rejects(() => call({ phase: "escalate", reason: "blocked", verified
 waiting = false;
 await assert.rejects(() => call({ phase: "escalate", reason: "error" }), /verified state/);
 assert.equal(current, luna10, "tool failure alone cannot escalate");
-await call({ phase: "escalate", reason: "verified blocker", verified_state: "observed current form" });
+const escalatedResult = await call({ phase: "escalate", reason: "verified blocker", verified_state: "observed current form" });
+assert.match(escalatedResult.content[0].text, /Routing phase escalated.*Sol.*reason\/verified_state.*Do not execute\/escalate again/);
+assert.doesNotMatch(escalatedResult.content[0].text, /verified blocker|observed current form/);
+assert.deepEqual(escalatedResult.details, { phase: "escalated" });
 assert.equal(current, sol10);
 assert.match(labels.at(-1), /блокаж: Sol/);
+const finalView = phaseView();
+assert.match(finalView[0].sections.computer_use_routing, /phase escalated.*Sol.*no execute/);
+assert.equal(finalView[0].toolsAdded.some(t => t.name === "desktop_model_phase"), false);
+assert.equal(finalView[2].toolsAdded.some(t => t.name === "desktop_model_phase" && !t.namespace), false);
+assert.equal(finalView[2].toolsAdded.at(-1), phaseInput.messages[2].toolsAdded.at(-1),
+	"escalation removes only our unnamespaced phase declaration");
+assert.equal(finalView[0].toolsAdded[0], phaseInput.messages[0].toolsAdded[0]);
+assert.deepEqual(finalView[2].toolsRemoved, phaseInput.messages[2].toolsRemoved);
 assert.equal(block("desktop_request_user", undefined, { reason: "technical" }), undefined, "Sol may make an exhausted technical handoff after review");
-await assert.rejects(() => call({ phase: "escalate", reason: "again", verified_state: "observed" }), /Wrong physical model/);
+await assert.rejects(() => call({ phase: "escalate", reason: "again", verified_state: "observed" }), /Escalated Sol final/);
+await assert.rejects(() => call({ phase: "execute", plan: "again" }), /Escalated Sol final/);
 const abort = new AbortController(); abort.abort();
 await assert.rejects(() => call({ phase: "execute", plan: "plan" }, abort.signal), /cancelled/);
 await emit("agent_settled");
@@ -131,6 +194,7 @@ await call({ phase: "execute", plan: "Verify then stop" });
 assert.equal(current, luna10);
 assert.equal(block("desktop_stop"), undefined);
 assert.equal(block("desktop_observe"), true, "Stop disables all further desktop actions");
+assert.equal(routing.phaseContext(phaseInput, ctx), undefined, "disabled task cannot present a live phase role");
 const stoppedAbort = new AbortController(); stoppedAbort.abort();
 await emit("agent_settled", {}, { ...ctx, signal: stoppedAbort.signal });
 assert.equal(current, original, "Stop and aborted run signal still restore owned physical model metadata");
@@ -151,6 +215,7 @@ assert.match(routing.summary(ctx), /account codex-other; Sol gpt-5.10-sol; Luna 
 current = other;
 await emit("model_select", { previousModel: otherSol, model: other });
 assert.equal(block("desktop_observe"), true);
+assert.equal(routing.phaseContext(phaseInput, ctx), undefined, "manual model change cannot retain phase guidance");
 current = otherSol;
 assert.equal(block("desktop_model_phase"), true, "switch away and back cannot resume queued calls");
 assert.equal(block("desktop_stop"), undefined);
@@ -199,6 +264,7 @@ assert.equal(block("desktop_ping"), undefined);
 await emit("agent_settled");
 available = [original, sol6, sol10, luna6, luna10, luna12, other, otherSol, otherLuna];
 enabled = false;
+assert.equal(routing.phaseContext(phaseInput, ctx), undefined, "OFF never rewrites a historical routing section");
 await routing.command("single", ctx);
 assert.equal(current, other, "single does not switch the manually selected model");
 assert.equal(labels.at(-1), undefined, "OFF keeps single-model bar hidden");

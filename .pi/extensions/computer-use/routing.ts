@@ -1,12 +1,24 @@
 import { randomUUID } from "node:crypto";
 import { Type } from "typebox";
-import type { ExtensionAPI, ExtensionContext, BeforeAgentStartEvent } from "@earendil-works/pi-coding-agent";
-import type { Model } from "@earendil-works/pi-ai";
+import type { ExtensionAPI, ExtensionContext, BeforeAgentStartEvent, ContextWithSystemEvent } from "@earendil-works/pi-coding-agent";
+import type { Model, SystemMessage } from "@earendil-works/pi-ai";
 import type { ComputerUseMode } from "./mode.js";
 
 const PREF = "computer-use-routing-preference-v1";
 const TASK = "computer-use-routing-task-v1";
 const SECTION = "computer_use_routing";
+const ownPhaseTool = (tool: { name: string; namespace?: unknown }): boolean =>
+	tool.name === "desktop_model_phase" && tool.namespace == null;
+const PHASE_RULES = {
+	plan: "Current routing phase plan; current physical model Sol. Use semantic reads, verified focus of observed windows and desktop_launch_app query metadata; images only under the normal visual-permission gate. Never dispatch or mutate UI beyond verified focus. Produce a concrete execution plan (<=4000 characters) with the actual artifact/code/content when needed, not merely a widget outline. Call desktop_model_phase({phase:'execute',plan}) exactly once, alone, to hand off.",
+	execute: "Current routing phase execute; current physical model Luna. You are ALREADY executing: never request execute again. Follow Sol's concrete plan/artifact; complete the UI workflow and verify it yourself. A missing compact control/name/role or menu is not alone a technical Sol blocker: use bounded fresh inspect/search, targeted wait, verified known shortcut/focus, or authorized smallest visual crop only after a concrete semantic blocker. Do not guess coordinates or try Super variants if unsupported; never replay uncertain input. Escalate one re-observed verified reasoning/technical blocker alone via desktop_model_phase({phase:'escalate',reason,verified_state}) before technical user handoff; security/MFA handoffs remain immediate.",
+	escalated: "Current routing phase escalated; current physical model Sol. Finish this task on Sol; no execute, no escalate, no Luna bounce. Review the verified blocker and preserved plan, use safe authorized alternatives when possible, otherwise request the user's concrete action. Never replay uncertain input.",
+} as const;
+const PHASE_PARAMETERS = {
+	plan: Type.Object({ phase: Type.Literal("execute"), plan: Type.String({ minLength: 1, maxLength: 4000 }) }, { additionalProperties: false }),
+	execute: Type.Object({ phase: Type.Literal("escalate"), reason: Type.String({ minLength: 1, maxLength: 1000 }),
+		verified_state: Type.String({ minLength: 1, maxLength: 2000 }) }, { additionalProperties: false }),
+} as const;
 type Ref = { provider: string; id: string };
 type Phase = "plan" | "execute" | "escalated";
 type Task = { id: string; phase: Phase; active: boolean; disabled?: boolean };
@@ -35,7 +47,8 @@ export class ComputerUseRouting {
 	private expected?: Ref;
 	private switching = false;
 	private mixedCallIds = new Set<string>();
-	constructor(private readonly pi: ExtensionAPI, private readonly mode: ComputerUseMode) {
+	constructor(private readonly pi: ExtensionAPI, private readonly mode: ComputerUseMode,
+		private readonly setRoutingAvailable?: (available: boolean) => void) {
 		pi.registerTool({ name: "desktop_model_phase", label: "Computer use · model handoff", exposure: "model-only",
 			description: "Sol hands a bounded plan (verified window/launcher or discovery step, no guessed selectors) to Luna alone; Luna must escalate a re-observed verified technical blocker for Sol review before technical user handoff. Never batch, escalate from one error, or repeat uncertain input.",
 			parameters: Type.Object({ phase: Type.Union([Type.Literal("execute"), Type.Literal("escalate")]),
@@ -52,7 +65,11 @@ export class ComputerUseRouting {
 				const from = input.phase === "execute" ? this.preference.sol : this.preference.luna;
 				const to = input.phase === "execute" ? this.preference.luna : this.preference.sol;
 				const expected = input.phase === "execute" ? "plan" : "execute";
-				if (task.phase !== expected || !same(ctx.model ? ref(ctx.model) : undefined, from) || !same(this.owned, from)) throw new Error("Wrong physical model or phase; no handoff performed");
+				if (task.phase !== expected || !same(ctx.model ? ref(ctx.model) : undefined, from) || !same(this.owned, from)) {
+					if (task.phase === "escalated") throw new Error("Escalated Sol final; do not execute/escalate again");
+					if (task.phase === "execute" && input.phase === "execute") throw new Error("Already executing on Luna; continue the plan, do not hand off again");
+					throw new Error("Wrong physical model or phase; no handoff performed");
+				}
 				if (input.phase === "execute" && (!input.plan?.trim() || input.reason || input.verified_state)) throw new Error("Sol handoff requires a bounded plan only");
 				if (input.phase === "escalate" && (!input.reason?.trim() || !input.verified_state?.trim() || input.plan)) throw new Error("Escalation requires a reason and current verified state, not a plan");
 				await this.switchTo(ctx, to, task.id, signal);
@@ -65,9 +82,11 @@ export class ComputerUseRouting {
 				this.task = { ...task, phase };
 				this.pi.appendEntry(TASK, this.task);
 				this.label(ctx);
+				// The native transcript already holds the preceding tool-call arguments.
+				// Avoid duplicating private plans or verified state in tool-result text.
 				return { content: [{ type: "text", text: input.phase === "execute"
-					? `Next native request uses Luna. Plan: ${input.plan.trim()} Resolve unknown/versioned/localized apps with desktop_launch_app({query:product}) first (lookup does not launch); choose a verified returned app_id. For a launch failure, change semantic method, not guessed selectors. After accepted/uncertain dispatch, observe, never replay. Before technical user handoff, re-observe bounded alternatives and escalate a verified blocker to Sol for review.`
-					: `Next native request uses Sol; stay on Sol. Reason: ${input.reason.trim()}. Verified: ${input.verified_state.trim()}` }], details: { phase } };
+					? "Routing phase execute; next native request uses Luna. Execute the plan in the preceding tool-call arguments; never request execute again. Resolve bounded recoverable UI issues without escalation. lookup does not launch. Never replay uncertain input; one explicit verified escalation only."
+					: "Routing phase escalated; next native request uses Sol. Use reason/verified_state in the preceding tool-call arguments; finish on Sol. Do not execute/escalate again." }], details: { phase } };
 			},
 		});
 		pi.on("message_end", (event) => {
@@ -78,6 +97,7 @@ export class ComputerUseRouting {
 				for (const call of calls) this.mixedCallIds.add(call.id);
 		});
 		pi.on("tool_call", (event, ctx) => this.guard(event, ctx));
+		pi.on("context_with_system", (event, ctx) => this.phaseContext(event, ctx));
 		pi.on("model_select", (event, ctx) => {
 			if (this.expected && same(this.expected, ref(event.model))) return;
 			if (this.task?.active) this.deactivate(ctx, true);
@@ -130,6 +150,7 @@ export class ComputerUseRouting {
 	/** Refresh the existing above-editor mode bar after an explicit ON/OFF toggle. */
 	refreshLabel(ctx: ExtensionContext): void { this.label(ctx); }
 	private label(ctx: ExtensionContext): void {
+		this.setRoutingAvailable?.(!this.task?.disabled && (!this.task?.active || this.task.phase !== "escalated"));
 		const p = this.preference;
 		const ids = p.hybrid ? p.sol && p.luna ? `${p.sol.id} → ${p.luna.id}` : "Sol → Luna"
 			: `single · ${ctx.model?.id ?? "unknown"}`;
@@ -228,7 +249,7 @@ export class ComputerUseRouting {
 				this.pi.appendEntry(PREF, this.preference);
 				await this.switchTo(ctx, targets.sol, task.id);
 				if (this.task !== task || !this.mode.isEnabled() || ctx.signal?.aborted) throw new Error("Hybrid task cancelled before planning");
-				event.systemPromptOptions.sections[SECTION] = "Hybrid desktop task: Sol plans using semantic inspection, verified focus of observed windows and desktop_launch_app({query:product}) metadata lookup (never launch or other input); include a verified window title or discovered launcher ID, or instruct Luna to query if unknown. Call desktop_model_phase({phase:'execute',plan}) alone. Luna must escalate a re-observed verified blocker for Sol review before technical user handoff, via desktop_model_phase({phase:'escalate',reason,verified_state}) alone after bounded materially different alternatives. No automatic escalation from one error or repeat of uncertain input. Both models follow computer-use mode rules. desktop_visual_permission is orchestration, not desktop input.";
+				event.systemPromptOptions.sections[SECTION] = PHASE_RULES.plan;
 			} catch (error) {
 				this.deactivate(ctx, true);
 				if (ctx.signal?.aborted) return; // User abort is notification-silent.
@@ -246,6 +267,34 @@ export class ComputerUseRouting {
 		}
 		this.label(ctx);
 	}
+	/** Request-local phase view: keep every historical message and every other section/tool delta intact. */
+	phaseContext(event: ContextWithSystemEvent, ctx: ExtensionContext): { messages: ContextWithSystemEvent["messages"] } | undefined {
+		const task = this.task;
+		if (!this.preference.hybrid || !this.mode.isEnabled() || !task?.active || task.disabled || this.switching ||
+			ctx.signal?.aborted || this.mode.isWaitingForUser() || event.messages[0]?.role !== "system") return;
+		const expected = task.phase === "execute" ? this.preference.luna : this.preference.sol;
+		if (!same(ctx.model ? ref(ctx.model) : undefined, expected) || !same(this.owned, expected)) return;
+		const phase = task.phase;
+		const messages = event.messages.map((message, index) => {
+			if (message.role !== "system") return message;
+			const system = message as SystemMessage;
+			// Previous tasks can leave section patches in the transcript. Remove only
+			// our later patches so no historical Sol instruction overrides this phase.
+			const sections = index === 0 ? { ...system.sections, [SECTION]: PHASE_RULES[phase] }
+				: system.sections && Object.hasOwn(system.sections, SECTION)
+					? Object.fromEntries(Object.entries(system.sections).filter(([key]) => key !== SECTION)) : system.sections;
+			const toolsAdded = system.toolsAdded?.map(tool => {
+				if (!ownPhaseTool(tool) || phase === "escalated") return tool;
+				return { ...tool, description: phase === "plan"
+					? "Sol: hand off one concrete bounded plan to Luna; call alone."
+					: "Luna: escalate one re-observed verified blocker to Sol; call alone.",
+					parameters: PHASE_PARAMETERS[phase] };
+			}).filter(tool => phase !== "escalated" || !ownPhaseTool(tool));
+			return { ...system, sections, ...(toolsAdded ? { toolsAdded } : {}) };
+		});
+		return { messages };
+	}
+
 	guard(event: { toolName: string; toolCallId?: string; input?: Record<string, unknown> }, ctx: ExtensionContext): { block: true; reason: string } | undefined {
 		if (event.toolName === "desktop_stop" && this.task?.active) { this.deactivate(ctx, true); return; }
 		if (this.task?.disabled && event.toolName.startsWith("desktop_") && !["desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName))
