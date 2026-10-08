@@ -105,6 +105,12 @@ Startup errors include the attempted binary/socket and a private startup diagnos
 
 Capture tools require one exact `desktop_visual_permission` before each image, including `desktop_observe` with `screenshot:true`. The model must cite an explicit user request or a concrete semantic blocker plus bounded AT-SPI/window/GIO checks. Grant and capture cannot share an assistant tool batch; use a live node crop or smallest useful rectangle. Full screen needs a stated layout requirement/request. Permission is consumed before dispatch checks and cleared on abort, settlement, or next run; failed/uncertain capture never leaves a replayable permit. The declaration remains model-provided evidence, not independent intent classification or a general sandbox. OFF gates apply to permission and capture alike.
 
+## Opt-in private task reports
+
+`/computer-use debug on [neutral-label]` opts in for subsequent Computer use ON runs without enabling desktop access. `debug off` stops future recording; `debug report` shows the last branch-local summary/path; `debug result pass|fail` explicitly rates that last result while idle. Fresh startup/resume/new/fork/tree default debug OFF; same-branch reload preserves deliberate opt-in.
+
+Private bounded JSON reports live under `$XDG_STATE_HOME/pi-computer/debug` or `~/.local/state/pi-computer/debug`, with `0700`/`0600` permissions and symlink refusal. Physical models, host timing intervals, observed usage, compaction and count metadata are retained, not raw prompts/UI/screenshots/credentials. Exact retries, full task tokens, billing and quota remain unknown. The offline `node scripts/compare-computer-use.mjs --label neutral-label [--dir path] [--json]` compares aggregate cohorts; only complete, user-rated passes from known-fresh, unique sessions enter headline performance metrics. See [the complete comparison workflow and measurement limits](TASK-COMPARISON.md).
+
 ## Settings and configuration
 
 The daemon reads TOML from `COMPUTER_USE_CONFIG` when set (an explicit missing/unreadable file is an error). Otherwise it reads `$XDG_CONFIG_HOME/pi-computer/config.toml` or `~/.config/pi-computer/config.toml` if present, and uses built-in defaults if absent. `scripts/run-daemon.sh` sets `COMPUTER_USE_CONFIG` to the repository's [config/default.toml](../config/default.toml) unless already set, so edits to that file take effect when using the script. To use the user config with the script, set `COMPUTER_USE_CONFIG` to its path. Invalid TOML or invalid settings stop startup before socket creation.
@@ -144,6 +150,9 @@ tests/test-focus-isolation.sh  # private Xephyr/WM; verified focus, no host-wind
 PI_BRAVE_A11Y_MODE=bridge PI_BRAVE_FORCE_A11Y=1 PI_BRAVE_BROWSER_GTK_MODULES=0 tests/test-brave-desktop-isolation.sh  # private profiles/network/display/bus; crash regression with web controls
 node tests/test-launch-app.mjs  # native GIO, private desktop registry and marker executables; no host UI/apps
 node tests/test-real-pi-load.mjs  # actual Pi resource loader, no model/daemon or import aliases
+node tests/test-computer-use-debug.mjs  # private synthetic lifecycle/privacy/permissions
+node tests/test-computer-use-comparison.mjs  # offline fixture-only comparison and unknown coverage
+node tests/test-real-pi-routing.mjs  # native loop with fake provider; actual model/usage report events, no desktop
 node tests/test-extension.mjs
 node tests/test-computer-use-mode.mjs  # isolated modes, default OFF, timers/bar widths, reload/branch state, silent abort, final-only notifications
 node --test tests/test-computer-use-notification.mjs  # captured notify-send argv; no real desktop notification

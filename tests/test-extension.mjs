@@ -31,6 +31,8 @@ const tempDir = await mkdtemp(path.join(os.tmpdir(), "pi-computer-extension-"));
 const socketPath = path.join(tempDir, "daemon.sock");
 const previousSocket = process.env.COMPUTER_USE_SOCKET;
 const previousBinary = process.env.COMPUTER_USE_DAEMON;
+const previousState = process.env.XDG_STATE_HOME;
+process.env.XDG_STATE_HOME = path.join(tempDir, "private-state");
 process.env.COMPUTER_USE_SOCKET = socketPath;
 // A live listener must be reused even when no startup binary is available.
 process.env.COMPUTER_USE_DAEMON = path.join(tempDir, "intentionally-absent-binary");
@@ -250,7 +252,36 @@ try {
 	await command.handler("", ctx(true));
 	assert.match(notifications.at(-1).message, /24 registered desktop_\* tools \(3 active\)/);
 	assert.match(notifications.at(-1).message, /connectivity and input state not checked/);
-	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single"]);
+	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
+	assert.deepEqual(command.getArgumentCompletions("debug ").map(({ value }) => value), ["debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
+	const debugDirectory = path.join(process.env.XDG_STATE_HOME, "pi-computer", "debug");
+	const debugPrefs = () => entries.filter(entry => entry.customType === "computer-use-debug-v1");
+	await command.handler("debug", ctx(true));
+	assert.match(notifications.at(-1).message, /No debug report/);
+	await command.handler("debug report", ctx(false));
+	assert.match(notifications.at(-1).message, /No debug report/);
+	await command.handler("debug on bench-test", ctx(true));
+	assert.match(notifications.at(-1).message, /Debug ON.*Computer use ON separately/);
+	assert.deepEqual({ enabled: debugPrefs().at(-1).data.enabled, label: debugPrefs().at(-1).data.label }, { enabled: true, label: "bench-test" });
+	assert.equal(activeTools.filter(name => name.startsWith("desktop_")).length, 3, "debug opt-in never enables computer use");
+	const savedDebugCount = debugPrefs().length;
+	await command.handler("debug on unsafe/label", ctx(true));
+	assert.match(notifications.at(-1).message, /neutral ASCII label/);
+	assert.equal(debugPrefs().length, savedDebugCount, "invalid label cannot change opt-in");
+	await command.handler("debug result pass", ctx(true));
+	assert.match(notifications.at(-1).message, /No report for this session/);
+	assert.equal(sent.length, 0, "debug commands never become user tasks");
+	assert.equal(existsSync(debugDirectory), false, "debug factory and opt-in command never create files");
+	await handlers.get("before_agent_start")({ prompt: "PRIVATE_ORDINARY_QUESTION", systemPromptOptions: { sections: {} } }, fixtureContext);
+	assert.equal(existsSync(debugDirectory), false, "OFF ordinary prompt cannot create a debug report");
+	await handlers.get("session_start")({ reason: "reload" }, fixtureContext);
+	assert.equal(debugPrefs().length, savedDebugCount, "same-branch reload preserves opt-in without resetting metadata");
+	await handlers.get("session_start")({ reason: "startup" }, fixtureContext);
+	assert.equal(debugPrefs().at(-1).data.enabled, false, "fresh startup resets saved debug ON");
+	await command.handler("debug on bench-test", ctx(true));
+	await command.handler("debug off", ctx(true));
+	assert.equal(debugPrefs().at(-1).data.enabled, false);
+	assert.equal(existsSync(debugDirectory), false, "OFF mode and debug settings never write report files");
 	for (const removed of ["status", "instructions"]) {
 		await command.handler(removed, ctx(true));
 		assert.match(notifications.at(-1).message, /removed/);
@@ -764,5 +795,7 @@ try {
 	else process.env.COMPUTER_USE_SOCKET = previousSocket;
 	if (previousBinary === undefined) delete process.env.COMPUTER_USE_DAEMON;
 	else process.env.COMPUTER_USE_DAEMON = previousBinary;
+	if (previousState === undefined) delete process.env.XDG_STATE_HOME;
+	else process.env.XDG_STATE_HOME = previousState;
 	await rm(tempDir, { recursive: true, force: true });
 }

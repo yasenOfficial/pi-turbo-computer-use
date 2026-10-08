@@ -96,6 +96,16 @@ Only the Computer use ON bar shows routing, for example `Computer use ON · gpt-
 
 Switching models may lose prompt-cache benefits. Both receive the same conversation, so large history still costs tokens. **No quota reduction is claimed until a task-level benchmark**; the automated routing test uses a fake provider, not a billing measurement.
 
+### Opt-in task comparison
+
+Use `/computer-use debug on bench-blink` before a task in each fresh session: one with `models single` and a selected physical Sol, another with `models hybrid`. Debug never enables Computer use. After settlement, `debug report` shows the private report path; `debug result pass|fail` records **your** verification, not the agent's success claim.
+
+```sh
+node scripts/compare-computer-use.mjs --label bench-blink
+```
+
+Reports contain observed physical models, host/tool timings, usage coverage, image counts and compaction metadata—**no raw prompts, UI text, screenshots or passwords**. Missing usage, actual billing and subscription quota remain unknown. Default storage is `~/.local/state/pi-computer/debug` (`0700` directory, `0600` files), outside the public repository. Fresh sessions default debug OFF; `/reload` preserves deliberate opt-in. See [task comparison guide and limitations](docs/TASK-COMPARISON.md).
+
 ## Architecture
 
 ```text

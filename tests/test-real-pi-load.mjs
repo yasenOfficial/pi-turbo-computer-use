@@ -26,6 +26,8 @@ const tempDir = await mkdtemp(path.join(os.tmpdir(), "pi-real-extension-load-"))
 let session;
 const previousSocket = process.env.COMPUTER_USE_SOCKET;
 const previousDaemon = process.env.COMPUTER_USE_DAEMON;
+const previousState = process.env.XDG_STATE_HOME;
+process.env.XDG_STATE_HOME = path.join(tempDir, "private-state");
 process.env.COMPUTER_USE_SOCKET = path.join(tempDir, "must-not-exist.sock");
 process.env.COMPUTER_USE_DAEMON = path.join(tempDir, "must-not-start");
 try {
@@ -81,7 +83,10 @@ try {
 	assert.match(notices.at(-1), /24 registered desktop_\* tools/);
 	await slashCommand.handler("instructions", { ui: { notify: (text) => notices.push(text) } });
 	assert.match(notices.at(-1), /removed/);
-	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single"]);
+	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
+	const debugDirectory = path.join(process.env.XDG_STATE_HOME, "pi-computer", "debug");
+	const debugPrefs = () => session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-debug-v1");
+	assert.equal(existsSync(debugDirectory), false, "real extension load never creates a debug directory");
 	const messageCount = session.messages.length;
 	const toolCall = (toolName, suffix) => session.extensionRunner.emitToolCall({ type: "tool_call",
 		toolCallId: `load-gate-${suffix}`, toolName, input: {} });
@@ -96,6 +101,26 @@ try {
 	await session.prompt("/computer-use instructions");
 	await session.prompt("/computer-use status");
 	await session.prompt("/computer-use models");
+	await session.prompt("/computer-use debug");
+	await session.prompt("/computer-use debug report");
+	assert.equal(debugPrefs().length, 0, "report without opt-in does not persist anything");
+	await session.prompt("/computer-use debug on bench-test");
+	assert.equal(debugPrefs().at(-1).data.enabled, true);
+	assert.equal(debugPrefs().at(-1).data.label, "bench-test");
+	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"], "debug cannot turn computer use ON");
+	assert.equal(existsSync(debugDirectory), false, "debug opt-in alone does not touch disk");
+	const debugPrefCount = debugPrefs().length;
+	await session.prompt("/computer-use debug on unsafe/label");
+	await session.prompt("/computer-use debug result pass");
+	assert.equal(debugPrefs().length, debugPrefCount, "invalid label and result without a report do not change preferences");
+	await session.extensionRunner.emitBeforeAgentStart("PRIVATE_ORDINARY_QUESTION", undefined, { cwd });
+	assert.equal(existsSync(debugDirectory), false, "real OFF before_agent_start does not log ordinary questions");
+	await session.reload();
+	assert.equal(debugPrefs().at(-1).data.enabled, true, "reload restores debug ON in the same branch");
+	assert.equal(debugPrefs().length, debugPrefCount, "reload does not append a false reset");
+	await session.prompt("/computer-use debug off");
+	assert.equal(debugPrefs().at(-1).data.enabled, false);
+	assert.equal(existsSync(debugDirectory), false);
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-routing-preference-v1").length, 0,
 		"summary must not change routing preferences");
 	await session.prompt("/computer-use on");
@@ -120,7 +145,7 @@ try {
 	const region = { x: 5, y: 6, width: 70, height: 50 };
 	const grantParams = { basis: "explicit_user_request", reason: "The user asked for a screenshot of this small region",
 		checks: [], capture: "desktop_screenshot", target: region };
-	const permission = loadedExtension.tools.get("desktop_visual_permission")?.definition;
+	const permission = resourceLoader.getExtensions().extensions.find(ext => ext.path === extensionPath)?.tools.get("desktop_visual_permission")?.definition;
 	assert.ok(permission, "model-only permission is registered in the real resource loader");
 	const grantResult = await permission.execute("real-permit", grantParams, undefined, undefined, { signal: undefined });
 	assert.equal(JSON.parse(grantResult.content[0].text).single_use, true);
@@ -161,6 +186,9 @@ try {
 	await session.reload(); // Discard fixture activity; no settlement and no OS notification.
 	await session.prompt("/computer-use on");
 	assert.equal(activeDesktop().length, 17);
+	await session.prompt("/computer-use debug on restart-test");
+	assert.equal(debugPrefs().at(-1).data.enabled, true);
+	assert.equal(existsSync(debugDirectory), false, "debug cannot write without a settled task");
 	// Reproduce starting Pi on an existing branch with a stored ON entry.
 	await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
 	const freshStartup = await session.extensionRunner.emitBeforeAgentStart("ordinary prompt", undefined, { cwd });
@@ -169,6 +197,8 @@ try {
 	assert.match((await toolCall("desktop_observe", "restarted-off"))?.reason ?? "", /OFF/,
 		"startup reset also restores the OFF tool gate");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, false);
+	assert.equal(debugPrefs().at(-1).data.enabled, false, "fresh startup must reset debug ON as well");
+	assert.equal(existsSync(debugDirectory), false, "no OFF ordinary prompt or command wrote a report");
 	await session.reload();
 	const stillOff = await session.extensionRunner.emitBeforeAgentStart("ordinary prompt", undefined, { cwd });
 	assert.equal(stillOff.systemPromptOptions.sections.computer_use_mode, undefined, "reload must not resurrect old ON state");
@@ -183,5 +213,7 @@ try {
 	else process.env.COMPUTER_USE_SOCKET = previousSocket;
 	if (previousDaemon === undefined) delete process.env.COMPUTER_USE_DAEMON;
 	else process.env.COMPUTER_USE_DAEMON = previousDaemon;
+	if (previousState === undefined) delete process.env.XDG_STATE_HOME;
+	else process.env.XDG_STATE_HOME = previousState;
 	await rm(tempDir, { recursive: true, force: true });
 }

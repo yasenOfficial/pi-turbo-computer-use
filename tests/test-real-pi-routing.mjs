@@ -2,7 +2,7 @@
 // Isolated SDK session and fake streaming provider; never reaches a real provider or desktop.
 import assert from "node:assert/strict";
 import { existsSync, readdirSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -16,10 +16,13 @@ const { createAgentSession, DefaultResourceLoader, SessionManager, SettingsManag
 const tmp = await mkdtemp(path.join(os.tmpdir(), "pi-routing-fixture-"));
 const extensionPath = path.join(tmp, "routing-fixture.ts");
 const routingPath = path.resolve(import.meta.dirname, "../.pi/extensions/computer-use/routing.ts");
+const debugPath = path.resolve(import.meta.dirname, "../.pi/extensions/computer-use/debug.ts");
+const debugDir = path.join(tmp, "private-debug");
 const aiPath = path.join(path.dirname(sdkDir), "pi-ai/dist/index.js");
 let session;
 try {
 	await writeFile(extensionPath, `import { ComputerUseRouting } from ${JSON.stringify(routingPath)};
+import { ComputerUseDebug } from ${JSON.stringify(debugPath)};
 import { createAssistantMessageEventStream } from ${JSON.stringify(aiPath)};
 const models = ['gpt-sol','gpt-luna','gpt-original'].map(id => ({ id, name:id, api:'routing-fixture', provider:'routing-fixture', baseUrl:'http://127.0.0.1/never', reasoning:false, input:['text'], cost:{input:0,output:0,cacheRead:0,cacheWrite:0}, contextWindow:100000,maxTokens:1000 }));
 let count = 0;
@@ -44,13 +47,15 @@ export default function(pi) {
   let enabled = false;
   const mode = { isEnabled:()=>enabled, isWaitingForUser:()=>false, setRoutingLabel:(label)=>{ globalThis.__routingFixtureLabel = label; } };
   const routing = new ComputerUseRouting(pi,mode);
+  const debug = new ComputerUseDebug(pi,mode,routing,{now:()=>performance.now(),directory:${JSON.stringify(debugDir)}});
+  pi.registerCommand('fixture-debug',{handler:async (args,ctx)=>{ globalThis.__routingFixtureDebugNotice = await debug.command(args,ctx); }});
   pi.registerCommand('fixture-hybrid',{handler:async (_args,ctx)=>{ await routing.command('hybrid',ctx); }});
   pi.registerCommand('fixture-summary',{handler:async (_args,ctx)=>{ globalThis.__routingFixtureSummary = routing.summary(ctx); }});
   pi.registerCommand('fixture-off',{handler:async (_args,ctx)=>{ enabled = false; routing.refreshLabel(ctx); }});
   pi.registerCommand('fixture-on',{handler:async (_args,ctx)=>{ enabled = true; routing.refreshLabel(ctx); }});
   pi.registerCommand('fixture-remove-luna',{handler:async ()=>{ pi.registerProvider('routing-fixture',
     {...providerConfig, models: models.filter(m => !m.id.endsWith('-luna'))}); }});
-  pi.on('session_start',(_event,ctx)=>routing.start(ctx));
+  pi.on('session_start',(event,ctx)=>{ debug.start(ctx,event.reason); return routing.start(ctx); });
   pi.on('session_tree',(_event,ctx)=>routing.start(ctx));
   pi.on('before_agent_start',(event,ctx)=>routing.beforeStart(event,ctx));
   pi.on('agent_settled',()=>{ globalThis.__routingFixtureSettled = (globalThis.__routingFixtureSettled ?? 0) + 1; });
@@ -78,6 +83,12 @@ export default function(pi) {
 	await session.prompt("/fixture-summary");
 	assert.match(globalThis.__routingFixtureSummary, /Sol gpt-sol; Luna gpt-luna/);
 	assert.equal(session.messages.filter(m => m.role === "assistant").length, 0, "summary cannot request a model");
+	assert.equal(existsSync(debugDir), false, "debug factory and commands have not written to disk");
+	await session.prompt("/fixture-debug on fake-routing");
+	assert.match(globalThis.__routingFixtureDebugNotice, /Debug ON/);
+	assert.equal(existsSync(debugDir), false, "opt-in alone cannot create reports");
+	const reports = async () => Promise.all((await readdir(debugDir)).filter(name => /^[0-9a-f-]{36}\.json$/.test(name))
+		.map(async name => JSON.parse(await readFile(path.join(debugDir, name), "utf8"))));
 	const settledBefore = globalThis.__routingFixtureSettled ?? 0;
 	await session.prompt("Fixture desktop task");
 	assert.equal(globalThis.__routingFixtureSettled, settledBefore + 1, "no premature settlement during either handoff");
@@ -86,15 +97,33 @@ export default function(pi) {
 	assert.deepEqual(errors, []);
 	assert.equal(session.model.id, "gpt-sol", "settlement restores physical model without a final model request");
 	assert.match(globalThis.__routingFixtureLabel, /gpt-sol → gpt-luna$/);
+	const first = (await reports()).find(report => report.outcome === "completed" && report.modelCalls.length === 3);
+	assert.ok(first, "first real SDK run persisted a settled private report");
+	assert.equal(first.routing, "hybrid");
+	assert.deepEqual(first.modelCalls.map(call => call.modelId), ["gpt-sol", "gpt-luna", "gpt-sol"]);
+	assert.equal(first.modelCalls[0].selectedThinkingLevel, session.thinkingLevel,
+		"real turn_start records Pi's selected thinking level; provider-native effort may be absent");
+	assert.equal(first.usage.totalTokens, 6);
+	assert.equal(first.usage.input, 3); assert.equal(first.usage.output, 3);
+	assert.equal(first.timeline[0].assistantMessagesBeforeRun, 0);
+	assert.equal(first.totalTaskTokens, null, "observed SDK usage is not provider quota");
+	assert.equal(first.taskSuccess, null, "completion does not judge correctness");
 	await session.prompt("Second fixture desktop task");
 	assert.deepEqual(session.messages.filter(m => m.role === "assistant").map(m => m.model).slice(3), ["gpt-sol", "gpt-luna"],
 		"normal completion switches once, not a speculative escalation");
 	assert.equal(session.model.id, "gpt-sol", "normal completion restores original physical selection");
+	const second = (await reports()).find(report => report.outcome === "completed" && report.modelCalls.length === 2);
+	assert.ok(second, "second real SDK run wrote a separate report");
+	assert.deepEqual(second.modelCalls.map(call => call.modelId), ["gpt-sol", "gpt-luna"]);
+	assert.equal(second.usage.totalTokens, 4);
+	assert.equal(second.timeline[0].assistantMessagesBeforeRun, 3, "same-session history is visible as a count only");
+	const reportsBeforeOff = (await reports()).length;
 	await session.prompt("/fixture-off");
 	await session.prompt("Ordinary OFF question");
 	assert.equal(session.messages.filter(m => m.role === "assistant").at(-1).model, "gpt-sol",
 		"OFF leaves ordinary questions on the physical model");
 	assert.equal(globalThis.__routingFixtureLabel, undefined, "OFF hides routing label");
+	assert.equal((await reports()).length, reportsBeforeOff, "OFF ordinary question cannot be logged even if debug is ON");
 	await session.prompt("/fixture-on");
 	await session.prompt("/fixture-remove-luna");
 	assert.equal(session.extensionRunner.getModelRegistry().getAvailable().some(m =>
@@ -107,6 +136,10 @@ export default function(pi) {
 	assert.equal(session.messages.filter(m => m.role === "assistant").length, responsesBeforeFailure + 1,
 		"SDK still makes an ordinary error-reporting model request; do not claim handler cancellation");
 	assert.equal(session.model.id, "gpt-sol", "failed planning selection never chooses Luna or changes physical model");
+	const missingReports = (await reports()).filter(report => report.modelCalls.length === 1 && report.timeline[0].assistantMessagesBeforeRun >= 6);
+	assert.ok(missingReports.length >= 1, "missing Luna still makes one ordinary model request, not an invisible fallback");
+	assert.deepEqual(missingReports.at(-1).modelCalls.map(call => call.modelId), ["gpt-sol"]);
+	assert.equal(missingReports.at(-1).routing, "hybrid", "configuration is hybrid even though only Sol was available");
 	assert.deepEqual(errors, []);
 	console.log("Real Pi fake provider: Sol → Luna → Sol, normal Sol → Luna, OFF ordinary turn; physical footer, one native session");
 } finally {

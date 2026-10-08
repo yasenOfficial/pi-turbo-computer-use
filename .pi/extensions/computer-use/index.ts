@@ -8,6 +8,7 @@ import { registerComputerUseHandoff } from "./handoff.js";
 import { ComputerUseRouting } from "./routing.js";
 import { registerVisualPolicy } from "./visual-policy.js";
 import { DesktopLoadout } from "./loadout.js";
+import { ComputerUseDebug } from "./debug.js";
 
 /** Register model-callable tools for the local computer-use daemon. */
 export default function computerUseExtension(pi: ExtensionAPI): void {
@@ -16,14 +17,17 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 	const mode = new ComputerUseMode(pi);
 	const routing = new ComputerUseRouting(pi, mode);
 	const loadout = new DesktopLoadout(pi);
-	registerComputerUseCommand(pi, mode, routing, loadout);
+	const debug = new ComputerUseDebug(pi, mode, routing);
+	registerComputerUseCommand(pi, mode, routing, loadout, debug);
 	registerComputerUseHandoff(pi, mode);
 	registerVisualPolicy(pi, mode, { grant: name => loadout.allowCapture(name), clear: () => loadout.clearCapture() });
 	pi.on("session_start", async (event, ctx) => {
-		mode.start(ctx, event.reason); await routing.start(ctx); loadout.sync(mode.isEnabled(), routing.isHybrid());
+		mode.start(ctx, event.reason); debug.start(ctx, event.reason);
+		await routing.start(ctx); loadout.sync(mode.isEnabled(), routing.isHybrid());
 	});
 	pi.on("session_tree", async (_event, ctx) => {
-		mode.restore(ctx); await routing.start(ctx); loadout.sync(mode.isEnabled(), routing.isHybrid());
+		mode.restore(ctx); debug.start(ctx, "tree");
+		await routing.start(ctx); loadout.sync(mode.isEnabled(), routing.isHybrid());
 	});
 	pi.on("before_agent_start", async (event, ctx) => {
 		mode.beforeStart(event, ctx);

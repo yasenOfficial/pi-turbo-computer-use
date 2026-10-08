@@ -24,6 +24,9 @@
 /screenshots/
 /daemon-startup.log
 owner-*.json
+# Opt-in task reports, including a repository-local XDG_STATE_HOME override
+**/pi-computer/debug/
+/debug-reports/
 
 # Editor / OS local files
 .DS_Store
