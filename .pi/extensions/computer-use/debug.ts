@@ -36,6 +36,9 @@ const model = (m: any): EventRow => ({ provider: safe(m?.provider), modelId: saf
 const actionTypes = new Set(["click", "double_click", "drag", "scroll", "keypress", "focus_window", "set_text", "wait", "assert"]);
 const stopReasons = new Set(["pending", "stop", "length", "toolUse", "error", "aborted", "deferred"]);
 const TOOL_NAME = /^[A-Za-z0-9_]{1,80}$/;
+const requestReasons = new Set(["login", "mfa", "captcha", "approval", "clarification", "technical"]);
+const handoffPhases = new Set(["execute", "escalate"]);
+const launchStatuses = new Set(["lookup", "not_found", "ambiguous", "accepted", "dispatch_failed", "stopped", "invalid"]);
 const compactionReasons = new Set(["manual", "threshold", "overflow"]);
 
 /** Opt-in metadata-only observer. Never stores raw prompts, tool arguments/outputs or stream payloads. */
@@ -129,6 +132,9 @@ export class ComputerUseDebug {
 			const run = this.run;
 			if (!run) return;
 			const row: EventRow = { name: this.toolName(e.toolName), nested: !!e.parentToolCallId, atMs: this.duration(run.started, run) };
+			if (e.toolName === "desktop_launch_app") row.launchMode = typeof e.args?.query === "string" ? "lookup" : "dispatch";
+			if (e.toolName === "desktop_request_user" && requestReasons.has(e.args?.reason)) row.requestReason = e.args.reason;
+			if (e.toolName === "desktop_model_phase" && handoffPhases.has(e.args?.phase)) row.handoffPhase = e.args.phase;
 			if (["desktop_set_text", "desktop_type"].includes(e.toolName) && typeof e.args?.text === "string")
 				row.inputTextBytes = Buffer.byteLength(e.args.text);
 			if (e.toolName === "desktop_batch" && Array.isArray(e.args?.actions)) {
@@ -153,6 +159,14 @@ export class ComputerUseDebug {
 			if (span) {
 				span.row.elapsedMs = this.duration(span.at, run);
 				span.row.error = !!e.isError;
+				if (e.toolName === "desktop_launch_app") {
+					const response = e.result?.details?.response;
+					if (launchStatuses.has(response?.launch_status)) span.row.launchStatus = response.launch_status;
+					if (typeof response?.launch_attempted === "boolean") span.row.launchAttempted = response.launch_attempted;
+					if (Number.isSafeInteger(response?.app_matches_total) && response.app_matches_total >= 0)
+						span.row.appMatchesTotal = response.app_matches_total;
+					if (typeof response?.app_matches_truncated === "boolean") span.row.appMatchesTruncated = response.app_matches_truncated;
+				}
 				if (e.toolName === "desktop_batch") {
 					const result = e.result?.structuredContent ?? e.result?.details?.response;
 					if (Array.isArray(result?.steps)) {

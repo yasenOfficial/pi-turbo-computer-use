@@ -22,6 +22,7 @@ const jiti = createJiti(import.meta.url, { moduleCache: false,
 	alias: { typebox: requireSdk.resolve("typebox"), "@earendil-works/pi-tui": requireSdk.resolve("@earendil-works/pi-tui") } });
 const base = path.join(root, ".pi/extensions/computer-use");
 const { ComputerUseMode } = await jiti.import(path.join(base, "mode.ts"));
+const { ComputerUseRouting } = await jiti.import(path.join(base, "routing.ts"));
 const { registerComputerUseHandoff } = await jiti.import(path.join(base, "handoff.ts"));
 const { registerVisualPolicy } = await jiti.import(path.join(base, "visual-policy.ts"));
 
@@ -134,4 +135,51 @@ assert.equal(waiting.mode.isWaitingForUser(), false);
 assert.equal((await waiting.gate("desktop_observe")).length, 0, "new prompt permits fresh semantic re-observation");
 assert.ok((await waiting.gate("desktop_screenshot", region)).length, "old permit cannot survive the new run");
 
-console.log("Computer-use safety gates passed: OFF denies every desktop action, ON semantic access, handoff sibling orders, Action required and visual permit composition.");
+// Composed production handoff execute: a blocked technical request cannot set Action required.
+// Synthetic physical models and tool calls only; no provider, daemon, desktop or notification.
+async function hybridFixture() {
+	const f = fixture();
+	const models = ["gpt-original", "gpt-sol", "gpt-luna"].map(id => ({ id, provider: "test-account", api: "fixture" }));
+	let current = models[0];
+	Object.defineProperty(f.ctx, "model", { get: () => current });
+	f.ctx.modelRegistry = { getAvailable: () => models };
+	f.harness.pi.setModel = async (model) => {
+		const previousModel = current;
+		current = model;
+		await f.harness.emit("model_select", f.ctx, { model, previousModel });
+		return true;
+	};
+	const routing = new ComputerUseRouting(f.harness.pi, f.mode);
+	f.mode.setEnabled(true, f.ctx);
+	await routing.command("hybrid", f.ctx);
+	const event = { prompt: "Fixture desktop task", systemPromptOptions: { sections: {} } };
+	f.mode.beforeStart(event, f.ctx);
+	await routing.beforeStart(event, f.ctx);
+	assert.equal(current.id, "gpt-sol");
+	await f.call("desktop_model_phase", { phase: "execute", plan: "Observe verified state, then execute" });
+	assert.equal(current.id, "gpt-luna");
+	return { ...f, routing, getModel: () => current.id };
+}
+const hybrid = await hybridFixture();
+const technical = await hybrid.call("desktop_request_user", handoff);
+assert.match(technical.blocks[0]?.reason ?? "", /Technical user handoff requires Sol review/);
+assert.equal(hybrid.mode.isWaitingForUser(), false, "blocked direct execute must not set Action required");
+assert.deepEqual(hybrid.executed, ["desktop_model_phase"], "host gate never executes the blocked request");
+assert.equal((await hybrid.call("desktop_observe")).blocks.length, 0, "semantic observation remains available");
+await hybrid.call("desktop_model_phase", { phase: "escalate", reason: "Verified blocker after safe alternatives",
+	verified_state: "Observed current form and launcher" });
+assert.equal(hybrid.getModel(), "gpt-sol");
+assert.equal((await hybrid.call("desktop_request_user", handoff)).blocks.length, 0, "Sol may hand off exhausted technical blocker");
+assert.equal(hybrid.mode.isWaitingForUser(), true);
+for (const reason of ["login", "mfa", "captcha", "approval", "clarification"]) {
+	const f = await hybridFixture();
+	assert.equal((await f.call("desktop_request_user", { reason, instructions: "Please complete this step, then reply." })).blocks.length, 0,
+		`${reason} must bypass technical-only Sol review`);
+	assert.equal(f.mode.isWaitingForUser(), true);
+}
+const emergency = await hybridFixture();
+assert.equal((await emergency.call("desktop_stop")).blocks.length, 0, "emergency Stop cannot be blocked by technical review");
+assert.ok((await emergency.call("desktop_request_user", handoff)).blocks.length, "Stop disables subsequent requests");
+await emergency.harness.emit("agent_settled", emergency.ctx);
+assert.equal(emergency.getModel(), "gpt-original", "Stop settlement restores owned physical model metadata");
+console.log("Computer-use safety gates passed: OFF/ON, handoff composition, Luna technical review, immediate security handoffs, Stop and visual policy.");

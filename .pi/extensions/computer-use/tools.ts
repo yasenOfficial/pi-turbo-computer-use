@@ -45,8 +45,9 @@ const commands: CommandDefinition[] = [
 	},
 	{
 		name: "desktop_launch_app", label: "Launch installed app",
-		description: "Launch an installed desktop application by exact desktop ID (e.g. brave-browser.desktop) or exact localized display name. GIO dispatch accepted does not mean its window is ready; wait/observe to verify. No commands, paths or arguments.",
+		description: "Query installed app metadata by product name (query; no dispatch), or launch by verified exact desktop ID / localized name. Select the intended app_id from bounded matches; never guess a versioned ID. accepted is not window readiness: wait/observe. No commands, paths or arguments.",
 		parameters: Type.Union([
+			Type.Object({ query: Type.String({ minLength: 1, maxLength: 240, pattern: "^(?=.*\\S)[^\\x00-\\x1F\\x7F-\\x9F]+$", description: "Find up to 20 installed app candidates without launching; select an exact returned app_id before dispatch" }) }, { additionalProperties: false }),
 			Type.Object({ app_id: Type.String({ minLength: 9, maxLength: 240, pattern: "^[A-Za-z0-9_-][A-Za-z0-9._-]*\\.desktop$" }) }, { additionalProperties: false }),
 			Type.Object({ name: Type.String({ minLength: 1, maxLength: 240, pattern: "^(?=.*\\S)[^\\x00-\\x1F\\x7F-\\x9F]+$" }) }, { additionalProperties: false }),
 		]),
@@ -570,6 +571,10 @@ function responseText(response: Record<string, unknown>, budget = MAX_TEXT): str
 function modelResponse(response: Record<string, unknown>, command: string, payload: Record<string, JsonValue>): Record<string, unknown> {
 	if (command === "desktop_launch_app") {
 		return { ok: response.ok,
+			...(typeof response.launch_status === "string" ? { launch_status: response.launch_status } : {}),
+			...(typeof response.launch_attempted === "boolean" ? { launch_attempted: response.launch_attempted } : {}),
+			...(typeof response.app_matches_total === "number" ? { app_matches_total: response.app_matches_total } : {}),
+			...(typeof response.app_matches_truncated === "boolean" ? { app_matches_truncated: response.app_matches_truncated } : {}),
 			...(response.launch ? { launch: response.launch } : {}),
 			...(Array.isArray(response.app_matches) ? { app_matches: response.app_matches.slice(0, 20).map((match) => {
 				const app = match as Record<string, unknown>;
@@ -684,7 +689,8 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();
 				if (command.name === "desktop_stop") startup?.markStopped();
 				else if (command.name === "desktop_ping" || command.name === "desktop_metrics") await startup?.ensure(signal);
-				else await startup?.ensureCompatible(signal);
+				else await startup?.ensureCompatible(signal, command.name === "desktop_launch_app" &&
+					typeof (params as Record<string, unknown>).query === "string" ? "app_discovery" : undefined);
 				// A lease begin must never race ahead of cold-start readiness. Check
 				// again after it: Stop may arrive while a lease begin is pending.
 				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();

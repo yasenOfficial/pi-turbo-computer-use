@@ -53,6 +53,7 @@ One bounded JSON file per opted-in Computer use ON run:
 - Host turn-to-message-end intervals and first-content-event latency. These are **not network-only inference time or exact provider TTFT**.
 - Tool names, start/end intervals, error flags, result text-byte counts and image-block counts/encoded lengths. Nested tool spans are marked; root-only image counts avoid parent/child duplication. Root result counts are observed before any later `tool_result` transformation, not guaranteed final-transcript or distinct-capture counts.
 - Batch action types/counts, assertion match/error counts and input text-byte counts, never input text or asserted values.
+- Launch lookup/dispatch mode, allowlisted launch status/attempt flag and candidate counts, plus phase and user-handoff reason enums. No launcher query, candidate names/IDs, handoff instructions or plans.
 - Model-selection events, compaction timing/outcomes and separately exposed compaction usage. Overflow retry offered is a flag, not confirmation of a retried request.
 - Initial context estimates, prior assistant-message count, active-tool count and pre-injection system-prompt character count. Context estimates are **not billed request usage**.
 

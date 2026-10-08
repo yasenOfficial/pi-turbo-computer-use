@@ -90,6 +90,7 @@ assert.ok(rawFixtureChars > 90_000, "fixture should reproduce large IPC observat
 const received = [];
 const activity = [];
 let legacyMode = false;
+let discoveryCapable = true;
 const daemon = createServer((socket) => {
 	let buffer = "";
 	socket.setEncoding("utf8");
@@ -101,7 +102,7 @@ const daemon = createServer((socket) => {
 		if (request.cmd === "daemon_info") {
 			socket.end(JSON.stringify({ ok: true, daemon_info: { protocol_version: 1, build_id: "1234567890abcdef",
 				pid: process.pid, instance_id: "1".repeat(32), managed: false, input_stopped: false, busy: false,
-				active_workflows: 0, capabilities: ["atspi_direct_properties", "verified_focus", "launch_app"] } }) + "\n");
+				active_workflows: 0, capabilities: ["atspi_direct_properties", "verified_focus", "launch_app", ...(discoveryCapable ? ["app_discovery"] : [])] } }) + "\n");
 			return;
 		}
 		if (request.cmd === "control_activity") activity.push(request);
@@ -112,7 +113,11 @@ const daemon = createServer((socket) => {
 			socket.end(reply); return;
 		}
 		const response = request.cmd === "control_activity" && legacyMode ? { ok: false, error: "unknown command" }
-			: request.cmd === "launch_app" ? request.name === "Editor" ? { ok: false,
+			: request.cmd === "launch_app" ? request.query ? { ok: true, launch_status: "lookup", launch_attempted: false,
+				app_matches_total: 2, app_matches_truncated: false, app_matches: [
+					{ app_id: "com.st.STM32CubeIDE.desktop", name: "STM32CubeIDE" },
+					{ app_id: "com.st.STM32CubeIDE-1.17.desktop", name: "STM32CubeIDE 1.17" }] }
+				: request.name === "Editor" ? { ok: false,
 				error: "ambiguous desktop application; use app_id", app_matches: [
 					{ app_id: "org.example.Editor.desktop", name: "Editor" },
 					{ app_id: "org.other.Editor.desktop", name: "Editor" }] }
@@ -707,9 +712,10 @@ try {
 	assert.equal(launchTool.annotations.readOnlyHint, false);
 	const { Check } = sdkRequire("typebox/value");
 	const schema = launchTool.parameters;
-	for (const valid of [{ app_id: "xed.desktop" }, { app_id: "org.x.editor.desktop" }, { name: "Éditeur" }])
+	for (const valid of [{ app_id: "xed.desktop" }, { app_id: "org.x.editor.desktop" }, { name: "Éditeur" }, { query: "STM32CubeIDE" }])
 		assert.equal(Check(schema, valid), true, `expected valid selector: ${JSON.stringify(valid)}`);
-	for (const invalid of [{}, { app_id: "xed.desktop", name: "Editor" },
+	for (const invalid of [{}, { app_id: "xed.desktop", name: "Editor" }, { query: "CubeIDE", app_id: "xed.desktop" },
+		{ query: "CubeIDE", name: "Editor" }, { query: "CubeIDE", exec: "evil" }, { query: "" }, { query: "   " }, { query: "a\ncmd" },
 		{ app_id: "xed.desktop", exec: "evil" }, { name: "Editor", args: [] },
 		{ app_id: "../xed.desktop" }, { app_id: "/usr/share/applications/xed.desktop" },
 		{ app_id: ".hidden.desktop" }, { app_id: "evil;cmd.desktop" },
@@ -717,6 +723,21 @@ try {
 		{ name: "" }, { name: "   " }, { name: "a".repeat(241) }, { name: "a\ncmd" }])
 		assert.equal(Check(schema, invalid), false, `invalid selector accepted: ${JSON.stringify(invalid)}`);
 	const launchActivityStart = activity.length;
+	const lookup = await launchTool.execute("lookup-cube", { query: "STM32CubeIDE" });
+	assert.equal(lookup.isError, false);
+	assert.deepEqual(JSON.parse(lookup.content[0].text), { ok: true, launch_status: "lookup", launch_attempted: false,
+		app_matches_total: 2, app_matches_truncated: false, app_matches: [
+			{ app_id: "com.st.STM32CubeIDE.desktop", name: "STM32CubeIDE" },
+			{ app_id: "com.st.STM32CubeIDE-1.17.desktop", name: "STM32CubeIDE 1.17" }] });
+	assert.equal(received.at(-1).query, "STM32CubeIDE");
+	assert.equal(lookup.details.response.launch_attempted, false);
+	assert.equal(activity.at(-1).action, "begin", "lookup retains normal workflow lease");
+	discoveryCapable = false;
+	const beforeUnsupported = received.length, beforeUnsupportedLease = activity.length;
+	await assert.rejects(() => launchTool.execute("lookup-unsupported", { query: "CubeIDE" }), /lacks app_discovery.*discovery was not sent/);
+	assert.equal(received.length, beforeUnsupported, "unsupported old listener must not receive lookup");
+	assert.equal(activity.length, beforeUnsupportedLease, "unsupported lookup must not acquire a lease");
+	discoveryCapable = true;
 	const launchReceivedStart = received.length;
 	const launched = await launchTool.execute("launch-id", { app_id: "xed.desktop" });
 	assert.deepEqual(received[launchReceivedStart], { cmd: "launch_app", app_id: "xed.desktop" });

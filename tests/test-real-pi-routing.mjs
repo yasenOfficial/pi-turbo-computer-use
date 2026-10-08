@@ -27,12 +27,19 @@ import { createAssistantMessageEventStream } from ${JSON.stringify(aiPath)};
 const models = ['gpt-sol','gpt-luna','gpt-original'].map(id => ({ id, name:id, api:'routing-fixture', provider:'routing-fixture', baseUrl:'http://127.0.0.1/never', reasoning:false, input:['text'], cost:{input:0,output:0,cacheRead:0,cacheWrite:0}, contextWindow:100000,maxTokens:1000 }));
 let count = 0;
 export default function(pi) {
+  pi.registerTool({name:'desktop_launch_app', label:'Fixture GIO metadata (no desktop)', description:'Synthetic discovery only',
+    parameters:{type:'object',properties:{query:{type:'string'}},required:['query'],additionalProperties:false},
+    execute:async (_id,args)=>({content:[{type:'text',text:JSON.stringify({ok:true,launch_status:'lookup',launch_attempted:false,
+      app_matches:[{app_id:'com.st.STM32CubeIDE.desktop',name:'STM32CubeIDE'}]})}],details:undefined})});
   const providerConfig = { api:'routing-fixture', apiKey:'fixture-test-only', models, streamSimple(model, context) {
     const stream = createAssistantMessageEventStream();
     queueMicrotask(() => {
       const index = count++;
-      const tool = index === 0 || index === 3 ? { name:'desktop_model_phase', arguments:{phase:'execute',plan:'Observe then verify'} }
-        : index === 1 ? { name:'desktop_model_phase', arguments:{phase:'escalate',reason:'verified blocker',verified_state:'fixture state observed'} } : undefined;
+      if(index === 1) globalThis.__routingFixtureLookupVisible = JSON.stringify(context.messages).includes('com.st.STM32CubeIDE.desktop');
+      if(index === 2) globalThis.__routingFixtureLunaGuidanceVisible = JSON.stringify(context.messages).includes('lookup does not launch');
+      const tool = index === 0 ? {name:'desktop_launch_app',arguments:{query:'STM32CubeIDE'}}
+        : index === 1 || index === 4 ? { name:'desktop_model_phase', arguments:{phase:'execute',plan:'Use discovered com.st.STM32CubeIDE.desktop; observe then verify'} }
+        : index === 2 ? { name:'desktop_model_phase', arguments:{phase:'escalate',reason:'verified blocker',verified_state:'fixture state observed'} } : undefined;
       const content = tool ? [{type:'toolCall', id:'fixture-'+index, name:tool.name, arguments:tool.arguments}] : [{type:'text',text:'Fixture complete'}];
       const message = {role:'assistant', api:model.api, provider:model.provider, model:model.id, content,
         stopReason:tool?'toolUse':'stop', usage:{input:1,output:1,cacheRead:0,cacheWrite:0,totalTokens:2,cost:{input:0,output:0,cacheRead:0,cacheWrite:0,total:0}},timestamp:Date.now()};
@@ -93,30 +100,33 @@ export default function(pi) {
 	await session.prompt("Fixture desktop task");
 	assert.equal(globalThis.__routingFixtureSettled, settledBefore + 1, "no premature settlement during either handoff");
 	const answers = session.messages.filter(m => m.role === "assistant");
-	assert.deepEqual(answers.map(m => m.model), ["gpt-sol", "gpt-luna", "gpt-sol"]);
+	assert.deepEqual(answers.map(m => m.model), ["gpt-sol", "gpt-sol", "gpt-luna", "gpt-sol"]);
+	assert.equal(globalThis.__routingFixtureLookupVisible, true, "synthetic lookup result reaches Sol before physical handoff");
+	assert.equal(globalThis.__routingFixtureLunaGuidanceVisible, true, "Luna receives handoff safety guidance in the real session");
+	assert.equal(answers[0].content[0].name, "desktop_launch_app", "Sol queried synthetic metadata, not a real desktop");
 	assert.deepEqual(errors, []);
 	assert.equal(session.model.id, "gpt-sol", "settlement restores physical model without a final model request");
 	assert.match(globalThis.__routingFixtureLabel, /gpt-sol → gpt-luna$/);
-	const first = (await reports()).find(report => report.outcome === "completed" && report.modelCalls.length === 3);
+	const first = (await reports()).find(report => report.outcome === "completed" && report.modelCalls.length === 4);
 	assert.ok(first, "first real SDK run persisted a settled private report");
 	assert.equal(first.routing, "hybrid");
-	assert.deepEqual(first.modelCalls.map(call => call.modelId), ["gpt-sol", "gpt-luna", "gpt-sol"]);
+	assert.deepEqual(first.modelCalls.map(call => call.modelId), ["gpt-sol", "gpt-sol", "gpt-luna", "gpt-sol"]);
 	assert.equal(first.modelCalls[0].selectedThinkingLevel, session.thinkingLevel,
 		"real turn_start records Pi's selected thinking level; provider-native effort may be absent");
-	assert.equal(first.usage.totalTokens, 6);
-	assert.equal(first.usage.input, 3); assert.equal(first.usage.output, 3);
+	assert.equal(first.usage.totalTokens, 8);
+	assert.equal(first.usage.input, 4); assert.equal(first.usage.output, 4);
 	assert.equal(first.timeline[0].assistantMessagesBeforeRun, 0);
 	assert.equal(first.totalTaskTokens, null, "observed SDK usage is not provider quota");
 	assert.equal(first.taskSuccess, null, "completion does not judge correctness");
 	await session.prompt("Second fixture desktop task");
-	assert.deepEqual(session.messages.filter(m => m.role === "assistant").map(m => m.model).slice(3), ["gpt-sol", "gpt-luna"],
+	assert.deepEqual(session.messages.filter(m => m.role === "assistant").map(m => m.model).slice(4), ["gpt-sol", "gpt-luna"],
 		"normal completion switches once, not a speculative escalation");
 	assert.equal(session.model.id, "gpt-sol", "normal completion restores original physical selection");
 	const second = (await reports()).find(report => report.outcome === "completed" && report.modelCalls.length === 2);
 	assert.ok(second, "second real SDK run wrote a separate report");
 	assert.deepEqual(second.modelCalls.map(call => call.modelId), ["gpt-sol", "gpt-luna"]);
 	assert.equal(second.usage.totalTokens, 4);
-	assert.equal(second.timeline[0].assistantMessagesBeforeRun, 3, "same-session history is visible as a count only");
+	assert.equal(second.timeline[0].assistantMessagesBeforeRun, 4, "same-session history is visible as a count only");
 	const reportsBeforeOff = (await reports()).length;
 	await session.prompt("/fixture-off");
 	await session.prompt("Ordinary OFF question");

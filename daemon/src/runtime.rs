@@ -9,7 +9,12 @@ use tokio::sync::Notify;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 pub const BUILD_ID: &str = env!("PI_DAEMON_BUILD_ID");
-pub const CAPABILITIES: &[&str] = &["atspi_direct_properties", "verified_focus", "launch_app"];
+pub const CAPABILITIES: &[&str] = &[
+    "atspi_direct_properties",
+    "verified_focus",
+    "launch_app",
+    "app_discovery",
+];
 
 #[derive(Serialize)]
 pub struct BuildInfo {

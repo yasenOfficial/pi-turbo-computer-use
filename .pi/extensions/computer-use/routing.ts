@@ -37,7 +37,7 @@ export class ComputerUseRouting {
 	private mixedCallIds = new Set<string>();
 	constructor(private readonly pi: ExtensionAPI, private readonly mode: ComputerUseMode) {
 		pi.registerTool({ name: "desktop_model_phase", label: "Computer use · model handoff", exposure: "model-only",
-			description: "Sol hands a bounded plan to Luna alone; Luna may escalate one verified blocker to Sol alone. Never batch with other tools, escalate on a tool error, or repeat uncertain input.",
+			description: "Sol hands a bounded plan (verified window/launcher or discovery step, no guessed selectors) to Luna alone; Luna must escalate a re-observed verified technical blocker for Sol review before technical user handoff. Never batch, escalate from one error, or repeat uncertain input.",
 			parameters: Type.Object({ phase: Type.Union([Type.Literal("execute"), Type.Literal("escalate")]),
 				plan: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
 				reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
@@ -66,7 +66,7 @@ export class ComputerUseRouting {
 				this.pi.appendEntry(TASK, this.task);
 				this.label(ctx);
 				return { content: [{ type: "text", text: input.phase === "execute"
-					? `Next native request uses Luna. Plan: ${input.plan.trim()}`
+					? `Next native request uses Luna. Plan: ${input.plan.trim()} Resolve unknown/versioned/localized apps with desktop_launch_app({query:product}) first (lookup does not launch); choose a verified returned app_id. For a launch failure, change semantic method, not guessed selectors. After accepted/uncertain dispatch, observe, never replay. Before technical user handoff, re-observe bounded alternatives and escalate a verified blocker to Sol for review.`
 					: `Next native request uses Sol; stay on Sol. Reason: ${input.reason.trim()}. Verified: ${input.verified_state.trim()}` }], details: { phase } };
 			},
 		});
@@ -228,7 +228,7 @@ export class ComputerUseRouting {
 				this.pi.appendEntry(PREF, this.preference);
 				await this.switchTo(ctx, targets.sol, task.id);
 				if (this.task !== task || !this.mode.isEnabled() || ctx.signal?.aborted) throw new Error("Hybrid task cancelled before planning");
-				event.systemPromptOptions.sections[SECTION] = "Hybrid desktop task: Sol plans with semantic inspection only; call desktop_model_phase({phase:'execute',plan}) alone for Luna to execute. Luna may escalate one re-observed verified blocker via desktop_model_phase({phase:'escalate',reason,verified_state}) alone. No automatic escalation on errors or repeat of uncertain input. Both models follow the computer-use mode rules. desktop_visual_permission is orchestration, not desktop input.";
+				event.systemPromptOptions.sections[SECTION] = "Hybrid desktop task: Sol plans using semantic inspection, verified focus of observed windows and desktop_launch_app({query:product}) metadata lookup (never launch or other input); include a verified window title or discovered launcher ID, or instruct Luna to query if unknown. Call desktop_model_phase({phase:'execute',plan}) alone. Luna must escalate a re-observed verified blocker for Sol review before technical user handoff, via desktop_model_phase({phase:'escalate',reason,verified_state}) alone after bounded materially different alternatives. No automatic escalation from one error or repeat of uncertain input. Both models follow computer-use mode rules. desktop_visual_permission is orchestration, not desktop input.";
 			} catch (error) {
 				this.deactivate(ctx, true);
 				if (ctx.signal?.aborted) return; // User abort is notification-silent.
@@ -246,7 +246,7 @@ export class ComputerUseRouting {
 		}
 		this.label(ctx);
 	}
-	guard(event: { toolName: string; toolCallId?: string }, ctx: ExtensionContext): { block: true; reason: string } | undefined {
+	guard(event: { toolName: string; toolCallId?: string; input?: Record<string, unknown> }, ctx: ExtensionContext): { block: true; reason: string } | undefined {
 		if (event.toolName === "desktop_stop" && this.task?.active) { this.deactivate(ctx, true); return; }
 		if (this.task?.disabled && event.toolName.startsWith("desktop_") && !["desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName))
 			return { block: true, reason: "Computer-use routing disabled for this task; wait for a new user request" };
@@ -262,6 +262,18 @@ export class ComputerUseRouting {
 			return { block: true, reason: "Physical model changed midtask; desktop routing disabled" };
 		}
 		if (event.toolName === "desktop_model_phase") return;
+		// Only the executing Luna's technical handoff needs Sol review. Security
+		// and clarification requests remain immediate; this cannot prove the
+		// model's stated alternatives were actually tried.
+		if (this.task.phase === "execute" && event.toolName === "desktop_request_user" && event.input?.reason === "technical")
+			return { block: true, reason: "Technical user handoff requires Sol review: re-observe, try bounded materially different safe alternative when authorized, then escalate a verified blocker alone via desktop_model_phase. No automatic escalation/replay." };
+		if (event.toolName === "desktop_launch_app" && this.task.phase === "plan") {
+			const input = event.input;
+			const query = input?.query;
+			if (input && !Array.isArray(input) && Object.keys(input).length === 1 && typeof query === "string" &&
+				query.trim().length > 0 && Buffer.byteLength(query, "utf8") <= 240 && !/[\x00-\x1f\x7f-\x9f]/u.test(query)) return;
+			return { block: true, reason: "Sol may only query installed app metadata (query alone, <=240 UTF-8 bytes, no controls); actual launch requires Luna handoff" };
+		}
 		if (!event.toolName.startsWith("desktop_") || ["desktop_focus_window", "desktop_observe", "desktop_inspect", "desktop_search_seen", "desktop_changes", "desktop_dirty_regions", "desktop_wait", "desktop_ping", "desktop_metrics", "desktop_request_user", "desktop_visual_permission", "desktop_screenshot", "desktop_inspect_visual"].includes(event.toolName)) return;
 		if (this.task.phase === "plan") return { block: true, reason: "Sol planning cannot mutate the desktop; hand off a plan alone first" };
 	}

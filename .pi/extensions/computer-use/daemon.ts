@@ -66,7 +66,7 @@ function wait(ms: number): Promise<void> { return new Promise((resolve) => setTi
 /** Runtime-local startup singleflight. The daemon's socket lock arbitrates across Pi processes. */
 export class DesktopDaemonStartup {
 	private pending?: Promise<void>;
-	private compatibilityPending?: Promise<void>;
+	private compatibilityPending?: Promise<string[]>;
 	private spawned?: { pid: number; token: string };
 	private stopped = false;
 
@@ -81,7 +81,7 @@ export class DesktopDaemonStartup {
 	markStopped(): void { this.stopped = true; }
 
 	/** Before UI/AT-SPI access, check safety and upgrade only authenticated idle instances. */
-	async ensureCompatible(signal?: AbortSignal): Promise<void> {
+	async ensureCompatible(signal?: AbortSignal, requiredCapability?: string): Promise<void> {
 		if (signal?.aborted) throw new Error("Computer-use startup was cancelled");
 		if (!this.compatibilityPending) {
 			const pending = this.checkCompatibility();
@@ -89,16 +89,20 @@ export class DesktopDaemonStartup {
 			void pending.finally(() => { if (this.compatibilityPending === pending) this.compatibilityPending = undefined; }).catch(() => {});
 		}
 		const pending = this.compatibilityPending;
-		if (!signal) return pending;
+		const verify = pending.then((capabilities) => {
+			if (requiredCapability && !capabilities.includes(requiredCapability))
+				throw new Error(`Running daemon lacks ${requiredCapability}; discovery was not sent. Build/reload a capable daemon or use verified semantic UI discovery; do not guess a launcher or retry an uncertain launch.`);
+		});
+		if (!signal) return verify;
 		return new Promise<void>((resolve, reject) => {
 			const abort = () => { signal.removeEventListener("abort", abort); reject(new Error("Computer-use startup was cancelled")); };
 			signal.addEventListener("abort", abort, { once: true });
 			if (signal.aborted) { abort(); return; }
-			pending.then(() => { signal.removeEventListener("abort", abort); resolve(); }, (error) => { signal.removeEventListener("abort", abort); reject(error); });
+			verify.then(() => { signal.removeEventListener("abort", abort); resolve(); }, (error) => { signal.removeEventListener("abort", abort); reject(error); });
 		});
 	}
 
-	private async checkCompatibility(): Promise<void> {
+	private async checkCompatibility(): Promise<string[]> {
 		// Validate the offline safety identity before cold UI startup as well.
 		if (!this.stopped && this.env.COMPUTER_USE_AUTOSTART !== "0" && await probeSocket(this.socketPath) === "missing")
 			await binaryBuildId(selectBinary(this.env));
@@ -127,6 +131,7 @@ export class DesktopDaemonStartup {
 		if (info.input_stopped) this.markStopped();
 		if (this.stopped) throw new Error("input stopped; desktop action was not sent");
 		if (!version.safe(info)) throw new Error("Desktop observation blocked: daemon lacks required safety fixes and cannot be upgraded while unowned, busy or leased. No browser action was sent.");
+		return info.capabilities;
 	}
 
 	/** After Stop, a later manual daemon restart must not silently authorize input. */

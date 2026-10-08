@@ -136,6 +136,7 @@ pub struct ShutdownRequest {
 pub struct LaunchAppRequest {
     pub app_id: Option<String>,
     pub name: Option<String>,
+    pub query: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -330,9 +331,19 @@ pub struct Response {
     pub batch: Option<BatchResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch: Option<LaunchResult>,
-    /// Exact display-name ambiguity only; no app was launched.
+    /// Installed visible desktop entries only; never Exec or filesystem paths.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_matches: Option<Vec<AppMatch>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_matches_total: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_matches_truncated: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_discovery: Option<bool>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_status: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub launch_attempted: Option<bool>,
     /// Net semantic change from the pre-batch generation, even if intermediate
     /// cache generations have been evicted.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -372,6 +383,11 @@ impl Response {
             batch: None,
             launch: None,
             app_matches: None,
+            app_matches_total: None,
+            app_matches_truncated: None,
+            app_discovery: None,
+            launch_status: None,
+            launch_attempted: None,
             changes: None,
             snapshot: None,
             delta: None,
@@ -684,14 +700,24 @@ mod tests {
             .unwrap(),
             Request::LaunchApp(LaunchAppRequest {
                 app_id: Some(_),
-                name: None
+                name: None,
+                query: None
             })
         ));
         assert!(matches!(
             serde_json::from_str::<Request>(r#"{"cmd":"launch_app","name":"Example"}"#).unwrap(),
             Request::LaunchApp(LaunchAppRequest {
                 app_id: None,
-                name: Some(_)
+                name: Some(_),
+                query: None
+            })
+        ));
+        assert!(matches!(
+            serde_json::from_str::<Request>(r#"{"cmd":"launch_app","query":"CubeIDE"}"#).unwrap(),
+            Request::LaunchApp(LaunchAppRequest {
+                query: Some(_),
+                app_id: None,
+                name: None
             })
         ));
         assert!(serde_json::from_str::<Request>(

@@ -31,7 +31,7 @@ const emit = async (name, event = {}, context = ctx) => { for (const fn of handl
 const before = async () => { const event = { prompt: "task", systemPromptOptions: { sections: {} } }; await routing.beforeStart(event, ctx); return event; };
 const tool = tools.get("desktop_model_phase");
 const call = (input, signal) => tool.execute("id", input, signal, undefined, ctx);
-const block = (toolName, toolCallId) => routing.guard({ toolName, toolCallId }, ctx)?.block;
+const block = (toolName, toolCallId, input) => routing.guard({ toolName, toolCallId, input }, ctx)?.block;
 assert.equal(pi.registerVirtualModel, undefined, "no virtual model is registered or visible in /model");
 assert.equal(tool.exposure, "model-only");
 await routing.start(ctx);
@@ -50,6 +50,8 @@ assert.equal((await before()).systemPromptOptions.sections.computer_use_routing,
 assert.equal(current, original, "OFF ordinary question stays on current physical model");
 assert.equal(labels.at(-1), undefined, "OFF hides routing label");
 assert.equal(block("desktop_observe"), true);
+assert.equal(block("desktop_launch_app", undefined, { query: "CubeIDE" }), true, "OFF also blocks metadata lookup");
+assert.match(routing.guard({ toolName: "desktop_request_user", input: { reason: "technical" } }, ctx)?.reason ?? "", /OFF/);
 await assert.rejects(() => call({ phase: "execute", plan: "plan" }), /OFF/);
 enabled = true;
 routing.refreshLabel(ctx); // Parent calls this immediately after /computer-use on.
@@ -61,6 +63,13 @@ assert.equal(current, sol10, "Sol selected before native first request");
 assert.match(labels.at(-1), /план: Sol/);
 assert.equal(block("desktop_click"), true);
 assert.equal(block("desktop_batch"), true);
+assert.equal(block("desktop_launch_app", undefined, { query: "STM32CubeIDE" }), undefined, "Sol can discover installed apps without dispatch");
+assert.equal(block("desktop_request_user", undefined, { reason: "technical" }), undefined,
+	"Sol planning may report an unrecoverable backend blocker");
+for (const invalid of [{ app_id: "xed.desktop" }, { name: "Editor" }, { query: "CubeIDE", app_id: "xed.desktop" },
+	{ query: "CubeIDE", name: "Editor" }, { query: "CubeIDE", exec: "evil" }, { query: "" }, { query: "   " },
+	{ query: "bad\nquery" }, { query: "é".repeat(121) }, {}])
+	assert.equal(block("desktop_launch_app", undefined, invalid), true, `Sol cannot dispatch/malformed query: ${JSON.stringify(invalid)}`);
 assert.equal(block("desktop_focus_window"), undefined);
 assert.equal(block("desktop_observe"), undefined);
 assert.equal(block("desktop_screenshot"), undefined, "visual policy alone controls capture");
@@ -74,7 +83,10 @@ let release;
 pending = new Promise(resolve => { release = resolve; });
 const switching = call({ phase: "execute", plan: "Inspect then act" });
 assert.equal(block("desktop_click"), true, "no companion input during model switch");
-release(); await switching; pending = undefined;
+release();
+const handedOff = await switching; pending = undefined;
+assert.match(handedOff.content[0].text, /query.*lookup does not launch.*verified returned app_id/);
+assert.match(handedOff.content[0].text, /Before technical user handoff.*escalate/);
 assert.equal(current, luna10);
 assert.match(labels.at(-1), /изпълнява: Luna/);
 const switchCount = selections.length;
@@ -83,9 +95,18 @@ await emit("session_compact", {});
 assert.equal(current, luna10, "tool errors and compaction do not escalate or change physical model");
 assert.equal(selections.length, switchCount);
 assert.equal(block("desktop_click"), undefined);
+assert.equal(block("desktop_launch_app", undefined, { app_id: "xed.desktop" }), undefined, "Luna may launch after handoff");
+assert.match(routing.guard({ toolName: "desktop_request_user", input: { reason: "technical", instructions: "Please fix it" } }, ctx)?.reason ?? "",
+	/Technical user handoff requires Sol review.*re-observe.*bounded materially different.*escalate.*No automatic escalation\/replay/);
+for (const reason of ["login", "mfa", "captcha", "approval", "clarification"])
+	assert.equal(block("desktop_request_user", undefined, { reason }), undefined, `${reason} handoff stays immediate`);
 assert.equal(block("desktop_model_phase"), undefined);
+const interrupted = new AbortController(); interrupted.abort();
+assert.match(routing.guard({ toolName: "desktop_request_user", input: { reason: "technical" } },
+	{ ...ctx, signal: interrupted.signal })?.reason ?? "", /cancelled/);
 waiting = true;
 assert.equal(block("desktop_click"), true);
+assert.match(routing.guard({ toolName: "desktop_request_user", input: { reason: "technical" } }, ctx)?.reason ?? "", /waiting for user/);
 await assert.rejects(() => call({ phase: "escalate", reason: "blocked", verified_state: "observed" }), /Action required/);
 waiting = false;
 await assert.rejects(() => call({ phase: "escalate", reason: "error" }), /verified state/);
@@ -93,6 +114,7 @@ assert.equal(current, luna10, "tool failure alone cannot escalate");
 await call({ phase: "escalate", reason: "verified blocker", verified_state: "observed current form" });
 assert.equal(current, sol10);
 assert.match(labels.at(-1), /блокаж: Sol/);
+assert.equal(block("desktop_request_user", undefined, { reason: "technical" }), undefined, "Sol may make an exhausted technical handoff after review");
 await assert.rejects(() => call({ phase: "escalate", reason: "again", verified_state: "observed" }), /Wrong physical model/);
 const abort = new AbortController(); abort.abort();
 await assert.rejects(() => call({ phase: "execute", plan: "plan" }, abort.signal), /cancelled/);
@@ -113,6 +135,8 @@ const stoppedAbort = new AbortController(); stoppedAbort.abort();
 await emit("agent_settled", {}, { ...ctx, signal: stoppedAbort.signal });
 assert.equal(current, original, "Stop and aborted run signal still restore owned physical model metadata");
 assert.equal(block("desktop_click"), true, "Stop gate remains sticky after settlement");
+assert.equal(block("desktop_launch_app", undefined, { query: "CubeIDE" }), true, "Stop disables lookup for this task");
+assert.match(routing.guard({ toolName: "desktop_request_user", input: { reason: "technical" } }, ctx)?.reason ?? "", /disabled/, "Stop remains dominant over technical handoff review");
 await before();
 await call({ phase: "execute", plan: "Observe" });
 current = other;

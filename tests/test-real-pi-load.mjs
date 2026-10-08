@@ -62,6 +62,11 @@ try {
 	const otherTools = session.getActiveToolNames().filter(name => !name.startsWith("desktop_"));
 	for (const name of ["desktop_request_user", "desktop_model_phase", "desktop_visual_permission"])
 		assert.equal(session.getAllTools().find(t => t.name === name)?.exposure, "model-only", `${name} must not be callable by scripts`);
+	const launchSchema = session.getToolDefinition("desktop_launch_app")?.parameters;
+	assert.ok(launchSchema, "real Pi registers the launch/query union");
+	assert.equal(Check(launchSchema, { query: "STM32CubeIDE" }), true);
+	assert.equal(Check(launchSchema, { query: "CubeIDE", app_id: "xed.desktop" }), false);
+	assert.equal(Check(launchSchema, { query: "CubeIDE", extra: true }), false);
 	const phaseSchema = session.getToolDefinition("desktop_model_phase")?.parameters;
 	assert.ok(phaseSchema);
 	assert.equal(Check(phaseSchema, { phase: "execute", plan: "Inspect first, then act" }), true);
@@ -90,6 +95,7 @@ try {
 	const messageCount = session.messages.length;
 	const toolCall = (toolName, suffix) => session.extensionRunner.emitToolCall({ type: "tool_call",
 		toolCallId: `load-gate-${suffix}`, toolName, input: {} });
+	assert.match((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "off-query", toolName: "desktop_launch_app", input: { query: "CubeIDE" } }))?.reason ?? "", /OFF/);
 	assert.match((await toolCall("desktop_observe", "off-observe"))?.reason ?? "", /OFF/,
 		"real Pi tool_call blocks observation at fresh OFF startup");
 	assert.match((await toolCall("desktop_click", "off-click"))?.reason ?? "", /OFF/);

@@ -10,11 +10,21 @@ use std::{
 };
 
 const MAX_SELECTOR: usize = 240;
-const MAX_AMBIGUOUS_MATCHES: usize = 20;
+const MAX_MATCHES: usize = 20;
+
+fn failure(status: &'static str, error: impl Into<String>) -> Response {
+    Response {
+        ok: false,
+        error: Some(error.into()),
+        launch_status: Some(status),
+        launch_attempted: Some(false),
+        ..Response::empty()
+    }
+}
 
 fn validate(request: &LaunchAppRequest) -> Result<(), &'static str> {
-    match (&request.app_id, &request.name) {
-        (Some(id), None) => {
+    match (&request.app_id, &request.name, &request.query) {
+        (Some(id), None, None) => {
             if id.is_empty()
                 || id.len() > MAX_SELECTOR
                 || !id.ends_with(".desktop")
@@ -26,7 +36,7 @@ fn validate(request: &LaunchAppRequest) -> Result<(), &'static str> {
                 return Err("app_id must be a desktop ID basename (*.desktop, max 240 ASCII bytes; no paths)");
             }
         }
-        (None, Some(name)) => {
+        (None, Some(name), None) => {
             if name.is_empty()
                 || name.trim().is_empty()
                 || name.chars().count() > MAX_SELECTOR
@@ -35,9 +45,60 @@ fn validate(request: &LaunchAppRequest) -> Result<(), &'static str> {
                 return Err("name must be a nonempty exact display name of at most 240 characters");
             }
         }
-        _ => return Err("provide exactly one of app_id or name"),
+        (None, None, Some(query)) => {
+            if query.is_empty()
+                || query.trim().is_empty()
+                || query.len() > MAX_SELECTOR
+                || query.chars().any(char::is_control)
+            {
+                return Err("query must be nonempty, at most 240 UTF-8 bytes, without controls");
+            }
+        }
+        _ => return Err("provide exactly one of query, app_id or name"),
     }
     Ok(())
+}
+
+// Sort before bounding; normalize case for de-duplication, with raw strings
+// as a stable tie-break when registry enumeration order differs.
+fn bounded_matches(matches: impl IntoIterator<Item = AppMatch>) -> (Vec<AppMatch>, usize, bool) {
+    let mut keyed: Vec<_> = matches
+        .into_iter()
+        .map(|app| (app.app_id.to_lowercase(), app.name.to_lowercase(), app))
+        .collect();
+    keyed.sort_by(|a, b| {
+        (&a.0, &a.1, &a.2.app_id, &a.2.name).cmp(&(&b.0, &b.1, &b.2.app_id, &b.2.name))
+    });
+    keyed.dedup_by(|a, b| a.0 == b.0 && a.1 == b.1);
+    let total = keyed.len();
+    let result = keyed
+        .into_iter()
+        .take(MAX_MATCHES)
+        .map(|(_, _, app)| app)
+        .collect();
+    (result, total, total > MAX_MATCHES)
+}
+
+fn discover(entries: &[AppMatch], query: &str) -> Response {
+    let query = query.trim().to_lowercase();
+    let (app_matches, app_matches_total, app_matches_truncated) = bounded_matches(
+        entries
+            .iter()
+            .filter(|app| {
+                app.app_id.to_lowercase().contains(&query)
+                    || app.name.to_lowercase().contains(&query)
+            })
+            .cloned(),
+    );
+    Response {
+        app_matches: Some(app_matches),
+        app_matches_total: Some(app_matches_total),
+        app_matches_truncated: Some(app_matches_truncated),
+        app_discovery: Some(true),
+        launch_status: Some("lookup"),
+        launch_attempted: Some(false),
+        ..Response::empty()
+    }
 }
 
 // A separate resolver keeps selection and the stop gate testable without a
@@ -52,22 +113,21 @@ fn select(entries: &[AppMatch], request: &LaunchAppRequest) -> Result<usize, Res
         })
         .collect();
     match matches.as_slice() {
-        [] => Err(Response::error(
+        [] => Err(failure(
+            "not_found",
             "installed visible desktop application not found",
         )),
         [(index, _)] => Ok(*index),
-        _ => Err(Response {
-            ok: false,
-            error: Some("ambiguous desktop application; use app_id".into()),
-            app_matches: Some(
-                matches
-                    .iter()
-                    .take(MAX_AMBIGUOUS_MATCHES)
-                    .map(|(_, app)| (*app).clone())
-                    .collect(),
-            ),
-            ..Response::empty()
-        }),
+        _ => {
+            let (app_matches, total, truncated) =
+                bounded_matches(matches.iter().map(|(_, app)| (*app).clone()));
+            Err(Response {
+                app_matches: Some(app_matches),
+                app_matches_total: Some(total),
+                app_matches_truncated: Some(truncated),
+                ..failure("ambiguous", "ambiguous desktop application; use app_id")
+            })
+        }
     }
 }
 
@@ -78,10 +138,13 @@ fn launch_with(
     dispatch: impl FnOnce(usize) -> Result<(), String>,
 ) -> Response {
     if let Err(error) = validate(&request) {
-        return Response::error(error);
+        return failure("invalid", error);
     }
     if safety.stopped() {
-        return Response::error("input stopped; restart daemon to re-enable");
+        return failure("stopped", "input stopped; restart daemon to re-enable");
+    }
+    if let Some(query) = &request.query {
+        return discover(entries, query);
     }
     let index = match select(entries, &request) {
         Ok(index) => index,
@@ -93,10 +156,12 @@ fn launch_with(
     // launch is already in flight and may still be accepted. Stop acknowledges
     // disabling subsequent gated launches; it cannot retract an in-flight one.
     if safety.stopped() {
-        return Response::error("input stopped; restart daemon to re-enable");
+        return failure("stopped", "input stopped; restart daemon to re-enable");
     }
     match dispatch(index) {
         Ok(()) => Response {
+            launch_status: Some("accepted"),
+            launch_attempted: Some(true),
             launch: Some(LaunchResult {
                 app_id: entries[index].app_id.clone(),
                 name: entries[index].name.clone(),
@@ -104,8 +169,18 @@ fn launch_with(
             }),
             ..Response::empty()
         },
-        Err(error) => Response::error(format!("desktop launch failed: {error}")),
+        // A failed GIO return does not prove activation had no side effects.
+        Err(error) => Response {
+            launch_attempted: Some(true),
+            ..failure("dispatch_failed", format!("desktop launch failed: {error}"))
+        },
     }
+}
+
+/// Only a GIO dispatch attempt may have changed the desktop. Even a failed
+/// GIO return cannot rule out startup side effects; lookup never dispatches.
+pub fn requires_accessibility_refresh(response: &Response) -> bool {
+    response.launch_attempted == Some(true)
 }
 
 // GIO owns desktop Exec field-code expansion, DBusActivatable activation,
@@ -181,10 +256,10 @@ fn metadata(value: *const c_char) -> Option<String> {
 /// Caller holds the daemon's action mutex for the full resolution/dispatch.
 pub fn launch(request: LaunchAppRequest, safety: Safety) -> Response {
     if let Err(error) = validate(&request) {
-        return Response::error(error);
+        return failure("invalid", error);
     }
     if safety.stopped() {
-        return Response::error("input stopped; restart daemon to re-enable");
+        return failure("stopped", "input stopped; restart daemon to re-enable");
     }
     let list = InstalledApps(unsafe { g_app_info_get_all() });
     let desktop_type = unsafe { g_desktop_app_info_get_type() };
@@ -206,6 +281,7 @@ pub fn launch(request: LaunchAppRequest, safety: Safety) -> Response {
                     let selector = LaunchAppRequest {
                         app_id: Some(app_id.clone()),
                         name: None,
+                        query: None,
                     };
                     if validate(&selector).is_ok() {
                         entries.push(AppMatch { app_id, name });
@@ -243,12 +319,21 @@ mod tests {
         LaunchAppRequest {
             app_id: Some(id.into()),
             name: None,
+            query: None,
         }
     }
     fn name(name: &str) -> LaunchAppRequest {
         LaunchAppRequest {
             app_id: None,
             name: Some(name.into()),
+            query: None,
+        }
+    }
+    fn query(query: &str) -> LaunchAppRequest {
+        LaunchAppRequest {
+            query: Some(query.into()),
+            name: None,
+            app_id: None,
         }
     }
     fn entries() -> Vec<AppMatch> {
@@ -277,14 +362,26 @@ mod tests {
         assert!(validate(&id(&format!("{}.desktop", "a".repeat(240)))).is_err());
         assert!(validate(&name("  ")).is_err());
         assert!(validate(&name("a\n")).is_err());
+        for bad in ["", " \t ", "a\n", &"é".repeat(121)] {
+            assert!(validate(&query(bad)).is_err());
+        }
+        assert!(validate(&query(&"é".repeat(120))).is_ok());
+        let mut mixed = query("Editor");
+        mixed.app_id = Some("one.desktop".into());
+        assert!(validate(&mixed).is_err());
+        mixed.app_id = None;
+        mixed.name = Some("Editor".into());
+        assert!(validate(&mixed).is_err());
         assert!(validate(&LaunchAppRequest {
             app_id: None,
-            name: None
+            name: None,
+            query: None
         })
         .is_err());
         assert!(validate(&LaunchAppRequest {
             app_id: Some("one.desktop".into()),
-            name: Some("Editor".into())
+            name: Some("Editor".into()),
+            query: None
         })
         .is_err());
     }
@@ -311,12 +408,94 @@ mod tests {
             Ok(())
         });
         assert_eq!(response.launch.unwrap().app_id, "one.desktop");
-        assert!(
-            !launch_with(id("one.desktop"), &safety, &registry, |_| Err(
-                "rejected".into()
-            ))
-            .ok
+        let failed = launch_with(id("one.desktop"), &safety, &registry, |_| {
+            Err("rejected".into())
+        });
+        assert!(!failed.ok);
+        assert_eq!(failed.launch_status, Some("dispatch_failed"));
+        assert_eq!(failed.launch_attempted, Some(true));
+    }
+    #[test]
+    fn discovery_is_bounded_deterministic_and_never_dispatches() {
+        let safety = Safety::default();
+        let mut registry = vec![AppMatch {
+            app_id: "stm32cubeide-1.18.desktop".into(),
+            name: "Éditeur STM32CubeIDE".into(),
+        }];
+        for n in (0..25).rev() {
+            registry.push(AppMatch {
+                app_id: format!("cube-{n:02}.desktop"),
+                name: "CubeIDE".into(),
+            });
+        }
+        registry.push(registry[0].clone());
+        let lookup = launch_with(query(" STM32CUBEIDE "), &safety, &registry, |_| {
+            panic!("query dispatched")
+        });
+        assert!(lookup.ok);
+        assert_eq!(lookup.launch_status, Some("lookup"));
+        assert_eq!(lookup.launch_attempted, Some(false));
+        assert_eq!(lookup.app_discovery, Some(true));
+        assert_eq!(lookup.app_matches_total, Some(1));
+        assert_eq!(lookup.app_matches.unwrap(), registry[..1]);
+        let lookup = launch_with(query("cube"), &safety, &registry, |_| {
+            panic!("query dispatched")
+        });
+        assert_eq!(lookup.app_matches_total, Some(26));
+        assert_eq!(lookup.app_matches_truncated, Some(true));
+        let matches = lookup.app_matches.unwrap();
+        assert_eq!(matches.len(), MAX_MATCHES);
+        assert_eq!(matches[0].app_id, "cube-00.desktop");
+        assert_eq!(matches[19].app_id, "cube-19.desktop");
+        let empty = launch_with(query("not-installed"), &safety, &registry, |_| {
+            panic!("query dispatched")
+        });
+        assert!(empty.ok);
+        assert_eq!(empty.app_matches_total, Some(0));
+        assert_eq!(empty.app_matches.unwrap(), Vec::<AppMatch>::new());
+        let launched = launch_with(
+            id("stm32cubeide-1.18.desktop"),
+            &safety,
+            &registry[..1],
+            |_| Ok(()),
         );
+        assert_eq!(launched.launch_status, Some("accepted"));
+        assert_eq!(launched.launch_attempted, Some(true));
+        let invalid = launch_with(query("\n"), &safety, &registry, |_| {
+            panic!("invalid dispatched")
+        });
+        assert_eq!(invalid.launch_status, Some("invalid"));
+        assert_eq!(invalid.launch_attempted, Some(false));
+    }
+    #[test]
+    fn accessibility_refresh_only_after_attempted_dispatch() {
+        let safety = Safety::default();
+        let registry = entries();
+        for request in [
+            query("Editor"),
+            query("absent"),
+            name("absent"),
+            name("Editor"),
+            query("\n"),
+        ] {
+            let response = launch_with(request, &safety, &registry, |_| panic!("no dispatch"));
+            assert!(
+                !requires_accessibility_refresh(&response),
+                "{:?}",
+                response.launch_status
+            );
+        }
+        let accepted = launch_with(id("one.desktop"), &safety, &registry, |_| Ok(()));
+        assert!(requires_accessibility_refresh(&accepted));
+        let failed = launch_with(id("one.desktop"), &safety, &registry, |_| {
+            Err("uncertain".into())
+        });
+        assert!(!failed.ok);
+        assert!(requires_accessibility_refresh(&failed));
+        safety.stop();
+        let stopped = launch_with(query("Editor"), &safety, &registry, |_| panic!("stopped"));
+        assert_eq!(stopped.launch_status, Some("stopped"));
+        assert!(!requires_accessibility_refresh(&stopped));
     }
     #[test]
     fn stop_after_final_gate_does_not_cancel_in_flight_dispatch() {

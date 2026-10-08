@@ -1381,7 +1381,9 @@ impl Daemon {
                 let response = tokio::task::spawn_blocking(move || apps::launch(request, safety))
                     .await
                     .context("desktop launch worker failed; dispatch outcome unknown; do not retry automatically")?;
-                if response.ok {
+                // A lookup is metadata-only; a failed dispatch can still have
+                // started an app. Refresh only after an actual GIO attempt.
+                if apps::requires_accessibility_refresh(&response) {
                     self.invalidate();
                 }
                 Ok(response)

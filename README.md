@@ -94,6 +94,10 @@ Selecting hybrid changes only the extension's routing preference; it does **not*
 
 Only the Computer use ON bar shows routing, for example `Computer use ON · gpt-sol → gpt-luna · изпълнява: Luna · 00:12`. It disappears while OFF. Pi's standard footer remains untouched and shows the real selected model; no `computer-use/sol-luna` virtual entry is registered. Old virtual selections migrate to a saved physical model when available. Preferences follow the session branch; no global default is changed.
 
+Unknown/versioned/localized launchers are resolved with the existing `desktop_launch_app({query:"STM32CubeIDE"})` tool: GIO returns bounded installed-app metadata and **does not launch**, even for one match. Sol may discover a launcher while planning; Luna dispatches a verified exact ID after handoff. Existing windows are observed/focused by their actual titles instead of guessing. A missing selector leads to bounded semantic shell/menu discovery, not repeated guessed IDs; accepted/uncertain launches are never replayed.
+
+Luna cannot send a technical `desktop_request_user` straight to the user: a re-observed verified blocker must first receive the one explicit Sol escalation/review. Login/MFA/CAPTCHA/approval/clarification handoffs remain immediate. This enforces model review, **not independent proof that alternatives were exhausted**; it neither automatically escalates on an error nor guarantees every app can be launched.
+
 Switching models may lose prompt-cache benefits. Both receive the same conversation, so large history still costs tokens. **No quota reduction is claimed until a task-level benchmark**; the automated routing test uses a fake provider, not a billing measurement.
 
 ### Opt-in task comparison

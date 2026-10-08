@@ -15,7 +15,7 @@ const root = mkdtempSync(path.join(os.tmpdir(), "pi-computer-debug-test-"));
 const directory = path.join(root, "private", "reports");
 const entries = [], handlers = new Map(), notices = [];
 let now = 100, mode = false, hybrid = false, idle = true, branch = entries, sessionId = "test-session";
-const pi = { on: (name, fn) => handlers.set(name, [...handlers.get(name) ?? [], fn]), appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), getActiveTools: () => ["desktop_observe", "read"], getAllTools: () => ["desktop_batch", "desktop_request_user", "read"].map(name => ({ name })) };
+const pi = { on: (name, fn) => handlers.set(name, [...handlers.get(name) ?? [], fn]), appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }), getActiveTools: () => ["desktop_observe", "read"], getAllTools: () => ["desktop_batch", "desktop_launch_app", "desktop_model_phase", "desktop_request_user", "read"].map(name => ({ name })) };
 let signal;
 const ctx = { hasUI: true, ui: { notify: (...x) => notices.push(x) }, isIdle: () => idle, get signal() { return signal; },
 	getSystemPrompt: () => "PRIVATE_SYSTEM_SENTINEL", getContextUsage: () => ({ tokens: 25, contextWindow: 4000, percent: 0.625 }), model: { provider: "fixture", id: "fixture-sol", api: "fixture" }, thinkingLevel: "medium",
@@ -103,6 +103,66 @@ assert.deepEqual(nestedReport.tools.map(row => row.nested), [false, true]);
 assert.equal(nestedReport.imageOccurrences, 2, "all span occurrences may include the same returned image twice");
 assert.equal(nestedReport.transcriptResultImages, 1, "nested result is absent from root transcript tool results");
 assert.match(await debug.command("report", ctx), /result images 1/);
+await debug.command("on launch-metadata", ctx);
+await run();
+const launchCases = ["lookup", "not_found", "ambiguous", "accepted", "dispatch_failed", "stopped", "invalid"];
+for (const [index, status] of launchCases.entries()) {
+	const toolCallId = `fixture-launch-${index}`;
+	await emit("tool_execution_start", { toolCallId, toolName: "desktop_launch_app",
+		args: index === 0 ? { query: "PRIVATE_QUERY_SENTINEL" } : { name: "PRIVATE_APP_NAME_SENTINEL", app_id: "PRIVATE_APPID_SENTINEL.desktop" } });
+	now += 1;
+	await emit("tool_execution_end", { toolCallId, toolName: "desktop_launch_app", isError: status !== "accepted" && status !== "lookup",
+		result: { content: [{ type: "text", text: "PRIVATE_RESULT_SENTINEL" }], details: { response: {
+			launch_status: status, launch_attempted: status === "accepted", app_matches_total: index === 0 ? 0 : index,
+			app_matches_truncated: index > 0, app_matches: [{ app_id: "PRIVATE_CANDIDATE_SENTINEL", name: "PRIVATE_NAME_SENTINEL" }],
+			error: "PRIVATE_ERROR_SENTINEL" } } } });
+}
+await emit("tool_execution_start", { toolCallId: "fixture-unknown-launch", toolName: "desktop_launch_app",
+	args: { app_id: "PRIVATE_APPID_SENTINEL.desktop" } });
+await emit("tool_execution_end", { toolCallId: "fixture-unknown-launch", toolName: "desktop_launch_app", isError: false,
+	result: { details: { response: { launch_status: "PRIVATE_UNKNOWN_STATUS_SENTINEL", launch_attempted: "true",
+		app_matches_total: -1, app_matches_truncated: "true", app_matches: ["PRIVATE_CANDIDATE_SENTINEL"] } }, content: [] } });
+for (const [index, total] of [1.5, Number.MAX_SAFE_INTEGER + 1, Number.NaN].entries()) {
+	const toolCallId = `fixture-invalid-count-${index}`;
+	await emit("tool_execution_start", { toolCallId, toolName: "desktop_launch_app", args: { query: "PRIVATE_QUERY_SENTINEL" } });
+	await emit("tool_execution_end", { toolCallId, toolName: "desktop_launch_app", isError: false,
+		result: { details: { response: { app_matches_total: total } }, content: [] } });
+}
+for (const [index, phase] of ["execute", "escalate", "PRIVATE_PHASE_SENTINEL"].entries()) {
+	const toolCallId = `fixture-phase-${index}`;
+	await emit("tool_execution_start", { toolCallId, toolName: "desktop_model_phase",
+		args: { phase, plan: "PRIVATE_PLAN_SENTINEL", reason: "PRIVATE_REASON_SENTINEL", verified_state: "PRIVATE_STATE_SENTINEL" } });
+	await emit("tool_execution_end", { toolCallId, toolName: "desktop_model_phase", isError: index === 1,
+		result: { details: { phase }, content: [{ type: "text", text: "PRIVATE_PHASE_RESULT_SENTINEL" }] } });
+}
+for (const [index, reason] of ["mfa", "PRIVATE_HANDOFF_REASON_SENTINEL"].entries()) {
+	const toolCallId = `fixture-request-${index}`;
+	await emit("tool_execution_start", { toolCallId, toolName: "desktop_request_user",
+		args: { reason, instructions: "PRIVATE_INSTRUCTIONS_SENTINEL" } });
+	await emit("tool_execution_end", { toolCallId, toolName: "desktop_request_user", isError: index === 1,
+		result: { details: { reason }, content: [{ type: "text", text: "PRIVATE_HANDOFF_RESULT_SENTINEL" }] } });
+}
+await emit("agent_settled");
+const launchText = readdirSync(directory).map(file => readFileSync(path.join(directory, file), "utf8"))
+	.find(body => JSON.parse(body).label === "launch-metadata");
+assert.ok(launchText); assert.doesNotMatch(launchText, /PRIVATE_/);
+const launchRows = JSON.parse(launchText).tools;
+assert.deepEqual(launchRows.slice(0, 7).map(row => row.launchStatus), launchCases);
+assert.deepEqual(launchRows.slice(0, 7).map(row => row.launchMode), ["lookup", ...Array(6).fill("dispatch")]);
+assert.equal(launchRows[0].appMatchesTotal, 0);
+assert.equal(launchRows[0].appMatchesTruncated, false);
+assert.equal(launchRows[0].launchAttempted, false);
+assert.equal(launchRows[3].launchAttempted, true);
+assert.equal(launchRows[7].launchMode, "dispatch");
+for (const row of launchRows.slice(7, 11)) {
+	assert.equal(row.launchStatus, undefined, "unknown status is never copied into the report");
+	assert.equal(row.launchAttempted, undefined, "invalid type cannot imply dispatch");
+	assert.equal(row.appMatchesTotal, undefined, "negative, fractional, unsafe and missing counts are omitted");
+	assert.equal(row.appMatchesTruncated, undefined);
+}
+assert.deepEqual(launchRows.slice(11, 14).map(row => row.handoffPhase), ["execute", "escalate", undefined]);
+assert.deepEqual(launchRows.slice(11, 14).map(row => row.error), [false, true, false]);
+assert.deepEqual(launchRows.slice(14, 16).map(row => row.requestReason), ["mfa", undefined]);
 await debug.command("on unended-turn", ctx);
 await run(); await emit("turn_start", { turnIndex: 99 }); now += 2;
 await emit("agent_settled");
