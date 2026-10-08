@@ -43,6 +43,7 @@ export default function(pi) {
   const mode = { isEnabled:()=>true, isWaitingForUser:()=>false };
   const routing = new ComputerUseRouting(pi,mode);
   pi.registerCommand('fixture-hybrid',{handler:async (_args,ctx)=>{ await routing.command('hybrid',ctx); }});
+  pi.registerCommand('fixture-summary',{handler:async (_args,ctx)=>{ globalThis.__routingFixtureSummary = routing.summary(ctx); }});
   pi.on('session_start',(_event,ctx)=>routing.start(ctx));
   pi.on('session_tree',(_event,ctx)=>routing.start(ctx));
   pi.on('before_agent_start',(event,ctx)=>routing.beforeStart(event,ctx));
@@ -63,6 +64,9 @@ export default function(pi) {
 	await session.setModel(original);
 	await session.prompt("/fixture-hybrid");
 	assert.equal(session.model.provider, "computer-use", "visible virtual selection");
+	await session.prompt("/fixture-summary");
+	assert.match(globalThis.__routingFixtureSummary, /Sol routing-fixture\/gpt-sol; Luna routing-fixture\/gpt-luna/);
+	assert.equal(session.messages.filter(m => m.role === "assistant").length, 0, "summary cannot request a model");
 	const settledBefore = globalThis.__routingFixtureSettled ?? 0;
 	await session.prompt("Fixture desktop task");
 	assert.equal(globalThis.__routingFixtureSettled, settledBefore + 1, "no premature settlement during either handoff");

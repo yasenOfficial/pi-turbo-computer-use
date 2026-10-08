@@ -78,8 +78,8 @@ try {
 	await slashCommand.handler("", { ui: { notify: (text) => notices.push(text) } });
 	assert.match(notices.at(-1), /24 registered desktop_\* tools/);
 	await slashCommand.handler("instructions", { ui: { notify: (text) => notices.push(text) } });
-	assert.match(notices.at(-1), /Never automatically retry input/);
-	assert.match(notices.at(-1), /desktop_launch_app/);
+	assert.match(notices.at(-1), /removed/);
+	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single"]);
 	const messageCount = session.messages.length;
 	const toolCall = (toolName, suffix) => session.extensionRunner.emitToolCall({ type: "tool_call",
 		toolCallId: `load-gate-${suffix}`, toolName, input: {} });
@@ -94,9 +94,9 @@ try {
 	await session.prompt("/computer-use"); // Real Pi dispatch path; help must not prompt a model.
 	await session.prompt("/computer-use instructions");
 	await session.prompt("/computer-use status");
-	await session.prompt("/computer-use models status");
+	await session.prompt("/computer-use models");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-routing-preference-v1").length, 0,
-		"status must not change routing preferences");
+		"summary must not change routing preferences");
 	await session.prompt("/computer-use on");
 	assert.equal((await toolCall("desktop_observe", "on-observe"))?.block, undefined, "ON allows semantic observation");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, true);
@@ -126,7 +126,7 @@ try {
 	assert.deepEqual(extensionErrors, [], "real event handlers must not fail");
 	assert.equal(session.messages.length, messageCount, "help/mode commands must not start an agent turn");
 	assert.equal(existsSync(process.env.COMPUTER_USE_SOCKET), false, "load/help/mode must not start a daemon");
-	console.log(`Real Pi extension load passed: /computer-use help, models status, toggle, default OFF startup, prompt injection and reload persistence, ${desktopNames.length} model-active desktop tools; no daemon, notification or model call.`);
+	console.log(`Real Pi extension load passed: /computer-use help, models summary, toggle, default OFF startup, prompt injection and reload persistence, ${desktopNames.length} model-active desktop tools; no daemon, notification or model call.`);
 } finally {
 	session?.dispose();
 	if (previousSocket === undefined) delete process.env.COMPUTER_USE_SOCKET;

@@ -19,6 +19,19 @@ const isRef = (value: any): value is Ref => Boolean(value && typeof value.provid
 const ref = (model: Model<any>): Ref => ({ provider: model.provider, id: model.id });
 const same = (a: Ref | undefined, b: Ref | undefined): boolean => !!a && !!b && a.provider === b.provider && a.id === b.id;
 const virtual = (model: Model<any> | undefined): boolean => model?.provider === PROVIDER && model.id === ID;
+/** Compare numeric version segments before the role; absent segments count as zero. */
+function compareVersions(a: Model<any>, b: Model<any>): number {
+	const numbers = (id: string) => (id.replace(/-(sol|luna)$/, "").match(/\d+/g) ?? []).map(Number);
+	const aa = numbers(a.id), bb = numbers(b.id);
+	for (let i = 0; i < Math.max(aa.length, bb.length); i++) {
+		const diff = (aa[i] ?? 0) - (bb[i] ?? 0);
+		if (diff) return diff;
+	}
+	return a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+}
+function newest(models: Model<any>[]): Model<any> | undefined {
+	return models.reduce<Model<any> | undefined>((best, model) => !best || compareVersions(model, best) > 0 ? model : best, undefined);
+}
 
 /** Same native Pi turn; no nested model invocation or background work. */
 export class ComputerUseRouting {
@@ -82,36 +95,20 @@ export class ComputerUseRouting {
 		return ctx.modelRegistry.getAvailable().filter((m) => m.api !== "pi-virtual" && !virtual(m));
 	}
 	private resolve(ctx: ExtensionContext, target: Ref | undefined, label: string): Model<any> {
-		if (!target) throw new Error(`No ${label} model selected; configure models ${label} provider/id`);
+		if (!target) throw new Error(`No saved ${label} model for this account; check /model or /login in the normal Pi UI`);
 		const model = this.available(ctx).find((m) => same(ref(m), target));
-		if (!model) throw new Error(`${label} ${target.provider}/${target.id} is unavailable or missing authentication; configure models ${label} provider/id`);
+		if (!model) throw new Error(`${label} ${target.provider}/${target.id} is no longer available on this account; check /model or /login in the normal Pi UI`);
 		return model;
 	}
-	private choose(ctx: ExtensionContext): Preference {
-		const models = this.available(ctx);
-		let sol = this.preference.sol;
-		if (!sol) {
-			if (ctx.model && !virtual(ctx.model) && /-sol$/.test(ctx.model.id) && models.some(m => same(ref(m), ref(ctx.model!)))) sol = ref(ctx.model);
-			else {
-				const candidates = models.filter(m => /-sol$/.test(m.id));
-				if (candidates.length !== 1) throw new Error(`Sol target ${candidates.length ? "ambiguous" : "unavailable"}; configure models sol provider/id`);
-				sol = ref(candidates[0]);
-			}
-		}
-		this.resolve(ctx, sol, "sol");
-		let luna = this.preference.luna;
-		if (!luna) {
-			const family = { provider: sol.provider, id: sol.id.replace(/-sol$/, "-luna") };
-			if (family.id !== sol.id && models.some(m => same(ref(m), family))) luna = family;
-			else {
-				const candidates = models.filter(m => m.provider === sol!.provider && /-luna$/.test(m.id));
-				if (candidates.length !== 1) throw new Error(`Luna target ${candidates.length ? "ambiguous" : "unavailable"} for ${sol.provider}; configure /computer-use models luna provider/id. ${candidates.length ? `Available: ${candidates.slice(0, 24).map(m => `${m.provider}/${m.id}`).join(", ")}` : "Use /computer-use models list to inspect authenticated targets."}`);
-				luna = ref(candidates[0]);
-			}
-		}
-		this.resolve(ctx, luna, "luna");
-		if (same(sol, luna)) throw new Error("Sol and Luna must be different physical models");
-		return { ...this.preference, sol, luna };
+	/** Discover only within the selected physical model's provider (the active account). */
+	private choose(ctx: ExtensionContext, original: Model<any>): { sol: Ref; luna: Ref } {
+		const models = this.available(ctx).filter(m => m.provider === original.provider);
+		const sol = /-sol$/.test(original.id) ? original : newest(models.filter(m => /-sol$/.test(m.id)));
+		if (!sol) throw new Error(`No authenticated Sol model on current account ${original.provider}; check /model or /login in the normal Pi UI`);
+		const paired = models.find(m => m.id === sol.id.replace(/-sol$/, "-luna"));
+		const luna = paired ?? newest(models.filter(m => /-luna$/.test(m.id)));
+		if (!luna) throw new Error(`No authenticated Luna model on current account ${original.provider}; check /model or /login in the normal Pi UI`);
+		return { sol: ref(sol), luna: ref(luna) };
 	}
 	private persist(): void { this.pi.appendEntry(PREF, this.preference); }
 	private status(ctx: ExtensionContext): void {
@@ -141,23 +138,21 @@ export class ComputerUseRouting {
 		}
 		this.status(ctx);
 	}
-	/** args after `models `; parent owns slash command dispatch. */
+	/** Read-only summary for the parent command's bare `models` case. */
+	summary(ctx: ExtensionContext): string {
+		const provider = virtual(ctx.model) ? this.preference.original?.provider : ctx.model?.provider;
+		const display = (target?: Ref) => target ? `${target.provider}/${target.id}` : "not selected";
+		return `Models: ${this.preference.hybrid ? "hybrid" : "single"}${typeof this.pi.registerVirtualModel !== "function" ? " (hybrid requires a newer Pi SDK)" : ""}; current account ${provider ?? "unknown"}; Sol ${display(this.preference.sol)}; Luna ${display(this.preference.luna)}; dispatched ${display(this.dispatched)}; phase ${this.task?.active ? this.task.phase : "idle"}. Use /computer-use models hybrid or single.`;
+	}
+	/** Only explicit mode selection; parent handles bare `models` with summary(ctx). */
 	async command(args: string, ctx: ExtensionContext): Promise<string> {
 		const text = args.trim();
-		if (text === "list") {
-			const provider = this.preference.sol?.provider ?? (!virtual(ctx.model) ? ctx.model?.provider : undefined);
-			const models = this.available(ctx).filter(m => /-(sol|luna)$/.test(m.id) && (!provider || m.provider === provider))
-				.map(m => `${m.provider}/${m.id}`).sort();
-			return models.length ? `Authenticated Sol/Luna targets${provider ? ` for ${provider}` : ""}:\n${models.slice(0, 24).join("\n")}${models.length > 24 ? "\nMore targets available in /model." : ""}\nConfigure: /computer-use models luna provider/id. This list does not change models or enable computer use.`
-				: `No authenticated Sol/Luna targets${provider ? ` for ${provider}` : ""}. Check /model; no model or computer-use setting was changed.`;
-		}
-		if (text === "status") return `Models: ${this.preference.hybrid ? "hybrid" : "single"}${typeof this.pi.registerVirtualModel !== "function" ? " (hybrid unavailable: upgrade Pi SDK for registerVirtualModel)" : ""}; Sol ${this.preference.sol ? `${this.preference.sol.provider}/${this.preference.sol.id}` : "auto"}; Luna ${this.preference.luna ? `${this.preference.luna.provider}/${this.preference.luna.id}` : "auto"}; phase ${this.task?.active ? this.task.phase : "idle"}.`;
 		if (text === "hybrid") {
 			if (typeof this.pi.registerVirtualModel !== "function") throw new Error("Computer-use hybrid requires a Pi SDK with registerVirtualModel (docs/virtual-models.md); upgrade Pi or use models single.");
-			const selected = this.choose(ctx);
 			const original = virtual(ctx.model) ? this.preference.original : ctx.model ? ref(ctx.model) : undefined;
-			if (!original) throw new Error("Select an authenticated physical model before enabling hybrid (needed for ordinary prompts)");
-			this.resolve(ctx, original, "original");
+			if (!original) throw new Error("Select an authenticated physical model in /model before enabling hybrid");
+			const physical = this.resolve(ctx, original, "original");
+			const selected = this.choose(ctx, physical); // Always recompute; ignore saved targets when the account changes.
 			const vm = ctx.modelRegistry.find(PROVIDER, ID);
 			if (!vm) throw new Error("Virtual model computer-use/sol-luna is not registered; reload with a compatible Pi SDK");
 			if (!await this.pi.setModel(vm)) throw new Error("Unable to select computer-use/sol-luna; check SDK model availability");
@@ -172,17 +167,7 @@ export class ComputerUseRouting {
 			this.preference = { ...this.preference, hybrid: false }; this.task = undefined; this.persist(); this.clear(ctx);
 			return "Single physical model selected; hybrid routing disabled.";
 		}
-		const match = /^(sol|luna)\s+([^\s/]+)\/([^\s/]+)$/.exec(text);
-		if (match) {
-			const key = match[1] as "sol" | "luna";
-			const target = { provider: match[2], id: match[3] };
-			this.resolve(ctx, target, key);
-			if (!new RegExp(`-${key}$`).test(target.id)) throw new Error(`${key} model id must end in -${key}`);
-			if (this.task?.active) throw new Error("Cannot reconfigure physical models during an active task");
-			this.preference = { ...this.preference, [key]: target }; this.persist(); this.status(ctx);
-			return `${key} set to ${target.provider}/${target.id}.`;
-		}
-		throw new Error("Usage: models hybrid|single|status|list|sol provider/id|luna provider/id");
+		throw new Error("Usage: models hybrid|single (bare models shows the summary)");
 	}
 	beforeStart(event: BeforeAgentStartEvent, ctx: ExtensionContext): void {
 		this.dispatched = undefined;
@@ -191,7 +176,11 @@ export class ComputerUseRouting {
 		this.task = { id: randomUUID(), phase: "plan", active: Boolean(active) };
 		this.pi.appendEntry(TASK, this.task);
 		if (active) {
-			this.choose(ctx); // fail closed before any request when auth or selection changed
+			const original = this.resolve(ctx, this.preference.original, "original");
+			if (!this.preference.sol || !this.preference.luna || this.preference.sol.provider !== original.provider ||
+				this.preference.luna.provider !== original.provider) throw new Error("Saved Sol/Luna targets do not match the selected account; choose /computer-use models hybrid again");
+			this.resolve(ctx, this.preference.sol, "sol");
+			this.resolve(ctx, this.preference.luna, "luna"); // No automatic provider/account switch.
 			event.systemPromptOptions.sections[SECTION] = "Hybrid desktop task: Sol plans using semantic inspection only (focus_window is permitted for inspection). Sol must call desktop_model_phase({phase:'execute',plan}) alone to hand off; Luna executes and verifies. Luna may call desktop_model_phase({phase:'escalate',reason,verified_state}) alone at most once after re-observing a verified blocker, not on a tool error/retry. Sol then remains responsible; never repeat uncertain input. No parallel companion desktop actions. Both models obey the computer-use rules in the mode section. desktop_visual_permission is an orchestration tool, not physical desktop input.";
 		} else delete event.systemPromptOptions.sections[SECTION];
 		this.status(ctx);

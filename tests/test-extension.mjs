@@ -245,11 +245,14 @@ try {
 	await command.handler("", ctx(true));
 	assert.match(notifications.at(-1).message, /24 registered desktop_\* tools \(24 active\)/);
 	assert.match(notifications.at(-1).message, /connectivity and input state not checked/);
-	await command.handler("status", ctx(false));
-	assert.match(notifications.at(-1).message, /desktop_ping/);
-	await command.handler("instructions", ctx(true));
-	assert.match(notifications.at(-1).message, /Never automatically retry input/);
-	assert.equal(sent.length, 0, "help and instructions must not submit a task");
+	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single"]);
+	for (const removed of ["status", "instructions"]) {
+		await command.handler(removed, ctx(true));
+		assert.match(notifications.at(-1).message, /removed/);
+	}
+	await command.handler("models", ctx(false));
+	assert.match(notifications.at(-1).message, /Models: single/);
+	assert.equal(sent.length, 0, "help, removed subcommands and routing summary must not submit a task");
 	assert.equal(received.length, 0, "command help must not contact the daemon");
 	assert.equal(activity.length, 0, "command help must not start workflow activity");
 	const guard = async (toolName, input = {}) => (await handlers.get("tool_call")({ toolName, input }, fixtureContext))
@@ -264,6 +267,10 @@ try {
 	await command.handler("on", ctx(true));
 	assert.equal(entries.at(-1).data.enabled, true);
 	assert.equal((await guard("desktop_observe")).length, 0, "ON allows ordinary semantic observations");
+	for (const removed of ["instructions", "status", "models status", "models list", "models luna provider/id", "models sol provider/id"]) {
+		await command.handler(removed, ctx(true));
+		assert.equal(sent.length, 0, "removed subcommands must not become desktop tasks while ON");
+	}
 	await command.handler("  Open the editor and save  ", ctx(true));
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].options, undefined);

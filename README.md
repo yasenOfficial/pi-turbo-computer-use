@@ -71,10 +71,8 @@ Optional foreground start for diagnostics:
 /computer-use <task>                Submit a task in this session (requires ON)
 /computer-use models hybrid         Select visible Sol → Luna routing
 /computer-use models single         Restore your original physical model
-/computer-use models status         Show routing targets and phase
-/computer-use models list           List authenticated Sol/Luna IDs (no changes)
-/computer-use status                Tool/mode status, not daemon connectivity
-/computer-use instructions          Show operating rules locally
+/computer-use models                Show selected routing and phase
+/computer-use                      Help and tool/mode summary
 ```
 
 Example:
@@ -87,13 +85,9 @@ For a user-only blocker, the agent calls `desktop_request_user`, explains the co
 
 ### Sol planning, Luna execution
 
-After `/reload`, select `/computer-use models hybrid`, then enable `/computer-use on`. The extension resolves authenticated physical targets from the runtime registry: the current Sol and its corresponding Luna, or an unambiguous same-provider Luna. Missing or ambiguous targets produce an error, not a guessed route. Run `/computer-use models list` to see authenticated IDs, then configure exact targets if needed:
+After `/reload`, select `/computer-use models hybrid`, then enable `/computer-use on`. No provider or model IDs need to be typed. The extension uses the provider of the currently selected physical model (the active account) and authenticated models from that provider only. It keeps your current Sol if selected; otherwise it chooses the newest available Sol by numeric model version. It prefers the exact paired Luna; otherwise it chooses the newest available Luna, with a stable ID tie-break. Missing Sol/Luna produces an error instead of selecting another account.
 
-```text
-/computer-use models sol provider/model-sol
-/computer-use models luna provider/model-luna
-/computer-use models hybrid
-```
+To change accounts, select a physical model on that account through Pi's normal `/model` UI, then run `/computer-use models hybrid` again. Saved targets are recomputed, not reused from a different provider. Bare `/computer-use models` shows the selection and phase. The old `instructions`, `status`, `models status`, `models list`, and manual provider/ID setters are removed; operating rules still apply automatically while ON.
 
 Sol inspects semantics and hands a bounded plan to Luna with `desktop_model_phase`. Luna executes registered desktop tools and verifies results; a difficult, state-verified blocker permits **one** explicit escalation to Sol, which finishes the task without bouncing back. Ordinary OFF prompts use the original physical model. `/model` shows `computer-use/sol-luna`; the host footer and assistant messages show the actual physical dispatch. Hybrid requires Pi's `registerVirtualModel` API; native tools remain loadable without it. Preferences follow the session branch; no global default is changed.
 
