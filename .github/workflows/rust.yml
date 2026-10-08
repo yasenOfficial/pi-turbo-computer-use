@@ -1,0 +1,32 @@
+name: Native Rust checks
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install native prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libglib2.0-dev dbus
+      - name: Select Rust toolchain
+        run: |
+          rustup toolchain install stable --profile minimal --component rustfmt
+          rustup override set stable
+      - name: Formatting
+        run: cargo fmt --check --manifest-path daemon/Cargo.toml
+      - name: Unit and isolated native tests
+        env:
+          COMPUTER_USE_OVERLAY: "0"
+        run: cargo test --locked --manifest-path daemon/Cargo.toml
+      - name: Release build
+        run: cargo build --release --locked --manifest-path daemon/Cargo.toml

@@ -1,0 +1,32 @@
+# Native / JS build outputs
+/daemon/target/
+/node_modules/
+**/node_modules/
+
+# Local Pi history and agent state, never source extensions
+/.pi/sessions/
+/.pi/agent/
+/.agents/
+
+# Runtime diagnostics, captures, credentials, and IPC artifacts
+*.log
+*.sock
+*.sock.lock
+*.core
+/core
+/core.*
+.env
+.env.*
+!.env.example
+/credentials/
+/state/
+/artifacts/
+/screenshots/
+/daemon-startup.log
+owner-*.json
+
+# Editor / OS local files
+.DS_Store
+*.swp
+*.swo
+*~

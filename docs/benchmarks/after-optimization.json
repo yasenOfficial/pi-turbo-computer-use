@@ -1,0 +1,477 @@
+{
+  "isolated": true,
+  "read_only": true,
+  "warmup": 10,
+  "response_lengths": "raw IPC JSON, excluding newline; not model-visible output or tokens",
+  "metrics_supported": true,
+  "results": {
+    "ping": {
+      "count": 100,
+      "cold_ms": 0.19164200000000164,
+      "cold_response_bytes": 33,
+      "cold_response_characters": 33,
+      "p50_ms": 0.012461999999999307,
+      "p95_ms": 0.0924399999999963,
+      "response_bytes_total": 3300,
+      "response_bytes_p50": 33,
+      "response_bytes_p95": 33,
+      "response_characters_p50": 33,
+      "response_characters_p95": 33,
+      "stages": {
+        "acquisition": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "at_spi": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture_other": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture_setup": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "convert": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "hash": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "ipc_handler": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 7,
+          "p50_us": 0,
+          "p95_us": 1
+        },
+        "lock": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "merge": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "seen_index": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "seen_search": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "serialization": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "windows": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        }
+      },
+      "capture_mode": null,
+      "capture_transport": null,
+      "transferred_pixels": 0,
+      "capture_count": 0
+    },
+    "observe": {
+      "count": 100,
+      "cold_ms": 227.62991200000002,
+      "cold_response_bytes": 94366,
+      "cold_response_characters": 94363,
+      "p50_ms": 1.309533999999985,
+      "p95_ms": 1.9573729999999614,
+      "response_bytes_total": 9436600,
+      "response_bytes_p50": 94366,
+      "response_bytes_p95": 94366,
+      "response_characters_p50": 94363,
+      "response_characters_p95": 94363,
+      "stages": {
+        "acquisition": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "at_spi": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "capture": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture_other": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture_setup": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "convert": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "hash": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "ipc_handler": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 24867,
+          "p50_us": 244,
+          "p95_us": 304
+        },
+        "lock": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 2,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "merge": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "seen_index": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 255,
+          "p50_us": 2,
+          "p95_us": 4
+        },
+        "seen_search": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "serialization": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 7984,
+          "p50_us": 79,
+          "p95_us": 86
+        },
+        "windows": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 17878,
+          "p50_us": 176,
+          "p95_us": 233
+        }
+      },
+      "capture_mode": null,
+      "capture_transport": null,
+      "transferred_pixels": 0,
+      "capture_count": 0
+    },
+    "dirty_regions": {
+      "count": 100,
+      "cold_ms": 11.924476000000027,
+      "cold_response_bytes": 229,
+      "cold_response_characters": 229,
+      "p50_ms": 1.5816389999999956,
+      "p95_ms": 7.986115000000041,
+      "response_bytes_total": 19029,
+      "response_bytes_p50": 189,
+      "response_bytes_p95": 190,
+      "response_characters_p50": 189,
+      "response_characters_p95": 190,
+      "stages": {
+        "acquisition": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 123707,
+          "p50_us": 552,
+          "p95_us": 6836
+        },
+        "at_spi": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 221462,
+          "p50_us": 1514,
+          "p95_us": 7920
+        },
+        "capture_other": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 14,
+          "p50_us": 0,
+          "p95_us": 1
+        },
+        "capture_setup": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "convert": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "hash": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 97550,
+          "p50_us": 968,
+          "p95_us": 1099
+        },
+        "ipc_handler": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 221642,
+          "p50_us": 1515,
+          "p95_us": 7923
+        },
+        "lock": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "merge": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 27,
+          "p50_us": 0,
+          "p95_us": 1
+        },
+        "seen_index": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "seen_search": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "serialization": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 21,
+          "p50_us": 0,
+          "p95_us": 1
+        },
+        "windows": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        }
+      },
+      "capture_mode": "full_root",
+      "capture_transport": "shm",
+      "transferred_pixels": 230400000,
+      "capture_count": 100
+    },
+    "search_seen": {
+      "count": 100,
+      "cold_ms": 0.3789390000000594,
+      "cold_response_bytes": 48,
+      "cold_response_characters": 48,
+      "p50_ms": 0.1636429999999791,
+      "p95_ms": 0.18413699999996425,
+      "response_bytes_total": 4800,
+      "response_bytes_p50": 48,
+      "response_bytes_p95": 48,
+      "response_characters_p50": 48,
+      "response_characters_p95": 48,
+      "stages": {
+        "acquisition": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "at_spi": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "capture": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture_other": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "capture_setup": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "convert": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "hash": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "ipc_handler": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 15202,
+          "p50_us": 149,
+          "p95_us": 159
+        },
+        "lock": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "merge": {
+          "count": 0,
+          "samples": 0,
+          "total_us": 0,
+          "p50_us": null,
+          "p95_us": null
+        },
+        "seen_index": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 104,
+          "p50_us": 1,
+          "p95_us": 1
+        },
+        "seen_search": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 2537,
+          "p50_us": 25,
+          "p95_us": 27
+        },
+        "serialization": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 0,
+          "p50_us": 0,
+          "p95_us": 0
+        },
+        "windows": {
+          "count": 100,
+          "samples": 100,
+          "total_us": 12389,
+          "p50_us": 121,
+          "p95_us": 129
+        }
+      },
+      "capture_mode": null,
+      "capture_transport": null,
+      "transferred_pixels": 0,
+      "capture_count": 0
+    }
+  }
+}

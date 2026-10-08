@@ -1,0 +1,40 @@
+# Daemon defaults loaded by scripts/run-daemon.sh. The installed daemon can
+# load ~/.config/pi-computer/config.toml or COMPUTER_USE_CONFIG instead.
+# The Pi extension reads environment variables, not this file.
+
+[daemon]
+# Default: $XDG_RUNTIME_DIR/pi-computer.sock, falling back to
+# /run/user/<effective-uid>/pi-computer.sock. COMPUTER_USE_SOCKET overrides it.
+socket = "${XDG_RUNTIME_DIR}/pi-computer.sock"
+# The daemon sets this fixed mode; other values are rejected.
+socket_mode = "0600"
+# Optional feedback overlay, incremental visual crop size, and startup diagnostics.
+overlay = true
+tile_size = 64
+debug = false
+
+[overlay.edge]
+# Color is #RRGGBB; width is the fine core in pixels, blur the Gaussian tail.
+# Opacity is 0.0..=1.0. Only monitor-edge strips are redrawn per tick.
+color = "#4198F7"
+width = 2
+blur = 28
+opacity = 0.22
+
+[overlay.cursor]
+# One antialiased, softly fading Gaussian halo follows the live pointer.
+color = "#4198F7"
+radius = 40
+opacity = 0.38
+
+[overlay.animation]
+# Breath between 35% and 100% of each configured edge/cursor opacity while
+# acting (1600 ms cycle, 30 fps). The click flash is warm and transient.
+# The owner pauses ticks and unmaps + synchronizes before screenshots.
+enabled = true
+period_ms = 1600
+fps = 30
+
+[client]
+# COMPUTER_USE_TIMEOUT_MS overrides the extension's request timeout.
+timeout_ms = 30000
