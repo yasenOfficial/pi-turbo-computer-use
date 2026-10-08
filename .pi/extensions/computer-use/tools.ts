@@ -661,7 +661,7 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 			label: command.label,
 			description: command.description,
 			...(command.name === "desktop_observe" ? { promptGuidelines: [
-				"For desktop automation use desktop_* tools, never bash/Node raw sockets or screenshot temp files. To open a known installed app, prefer desktop_launch_app by desktop ID or exact display name over navigating a GUI menu. Dispatch is not window readiness: wait/observe to verify. Otherwise prefer semantic observations and selectors; use visual capture only when needed. Revalidate historical search results before acting, batch related actions, and use images returned directly by desktop tools (or their normal text fallback).",
+				"For desktop automation use desktop_* tools, never bash/Node raw sockets or screenshot temp files. To open a known installed app, prefer desktop_launch_app by desktop ID or exact display name over navigating a GUI menu. Dispatch is not window readiness: wait/observe to verify. Otherwise prefer semantic observations and selectors; use visual capture only when needed. Revalidate historical search results before acting, batch related actions, and use images returned directly by desktop tools (or their normal text fallback). Minimize images and model round trips: inspect accessible field values/state without a screenshot, use changes or targeted waits for transitions, and batch verified actions. Do not recapture information already available semantically. For genuinely inaccessible UI, prefer a validated node crop or the smallest useful screenshot rectangle rather than repeated full-screen captures.",
 			] } : {}),
 			parameters: command.parameters,
 			annotations: {

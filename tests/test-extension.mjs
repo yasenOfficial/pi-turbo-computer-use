@@ -200,6 +200,8 @@ try {
 	assert.equal(activity.length, 0, "extension factory must not open sockets");
 	assert.deepEqual([...handlers.keys()], ["tool_call", "session_start", "session_tree", "before_agent_start", "tool_execution_start", "agent_before_settle", "agent_settled", "session_shutdown"]);
 	assert.equal(tools.get("desktop_observe").promptGuidelines.length, 1);
+	assert.match(tools.get("desktop_observe").promptGuidelines[0], /Minimize images and model round trips/);
+	assert.match(tools.get("desktop_observe").promptGuidelines[0], /Do not recapture information already available semantically/);
 	assert.equal(tools.size, 22, `expected all 22 tools, got ${tools.size}`);
 	assert.equal(tools.get("desktop_request_user").exposure, "model-only");
 	assert.ok(tools.has("desktop_ping"), "desktop_ping was not registered");
@@ -225,6 +227,7 @@ try {
 	assert.match(sent[0].content, /revalidate the current node/);
 	assert.match(sent[0].content, /desktop_launch_app/);
 	assert.match(sent[0].content, /Never automatically retry input/);
+	assert.match(sent[0].content, /Do not capture an image just to reconfirm information already returned semantically/);
 	assert.ok(sent[0].content.endsWith("User task (verbatim):\n  Open the editor and save  "));
 	await command.handler("Inspect the current window", ctx(false));
 	assert.deepEqual(sent[1].options, { deliverAs: "followUp" });
