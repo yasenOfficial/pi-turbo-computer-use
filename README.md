@@ -6,8 +6,9 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 
 ## Features
 
-- **22 model-facing tools:** semantic observe/diffs/inspection, UI history search, verified focus, native GIO app launch, Unicode editable text where supported, input, ordered batches, waits, bounded captures, dirty rectangles, metrics, emergency Stop, and an extension-local user handoff.
-- `/computer-use on`, `off`, and `toggle`. **OFF at fresh Pi startup**, including reopening saved sessions. `/reload` preserves the chosen mode in the current session.
+- **24 model-facing tools:** semantic observe/diffs/inspection, UI history search, verified focus, native GIO app launch, text, input, batches, waits, bounded captures, dirty rectangles, metrics, emergency Stop, user handoff, single-use visual permission, and model-phase handoff.
+- Optional **visible Sol → Luna routing in the same session**: Sol plans, Luna executes, and one explicit difficult-blocker escalation returns to Sol. No nested model or classifier calls.
+- `/computer-use on`, `off`, and `toggle`. **OFF blocks desktop observation and actions**, including task submission; only emergency Stop and metadata-only ping/metrics remain available. OFF at fresh Pi startup; `/reload` preserves the chosen mode.
 - An ON bar with a live whole-run timer and the last duration. Toggle/timing state is session-local; the physical desktop and emergency Stop are shared across sessions.
 - Breathing blue screen-edge light and a smooth cursor-following halo during desktop work **including model thinking**, with expiring workflow leases and capture suspension.
 - Lazy daemon startup and safety/version validation before UI calls. Authenticated, idle, extension-owned daemons can upgrade gracefully; arbitrary or emergency-stopped processes are never forcibly replaced.
@@ -67,7 +68,10 @@ Optional foreground start for diagnostics:
 /computer-use on                    Enable direct desktop prompts
 /computer-use off                   Disable persistent mode (not emergency Stop)
 /computer-use toggle                Toggle mode
-/computer-use <task>                One-off task in this same session
+/computer-use <task>                Submit a task in this session (requires ON)
+/computer-use models hybrid         Select visible Sol → Luna routing
+/computer-use models single         Restore your original physical model
+/computer-use models status         Show routing targets and phase
 /computer-use status                Tool/mode status, not daemon connectivity
 /computer-use instructions          Show operating rules locally
 ```
@@ -76,9 +80,23 @@ Example:
 
 > Open the text editor, create a new note with “Hello”, and save it in a new file. Do not overwrite existing files.
 
-While ON, normal prompts receive computer-use operating rules. The bar shows `Computer use ON · 00:12`, then `Computer use ON · последно: 00:23`. Timing begins before model execution and includes tool work/continuations, but not time waiting in Pi's input queue. Turning OFF hides the bar; it does not cancel a running task or revoke an already-issued input event.
+While ON, normal prompts receive computer-use operating rules. The bar shows `Computer use ON · 00:12`, then `Computer use ON · последно: 00:23`. Timing begins before model execution and includes tool work/continuations, but not time waiting in Pi's input queue. Turning OFF hides the bar and blocks further desktop tool calls. It does not cancel an already-running tool or revoke an already-issued input event. The agent cannot auto-enable the mode.
 
 For a user-only blocker, the agent calls `desktop_request_user`, explains the concrete step, ends its turn, and sends **Pi · Action required** at settlement instead of a completion notification. Complete the step directly and reply **“готово” / “done”**; the agent re-observes and continues. There is no background polling or second model orchestrator. Saved browser login may be used through the normal browser autofill UI for the matching requested site/account, unless the task forbids it. Password extraction/reveal, account creation, OTP retrieval, and security bypass are not authorized. This is model guidance and explicit handoff, not guaranteed automatic recognition of every login screen.
+
+### Sol planning, Luna execution
+
+After `/reload`, select `/computer-use models hybrid`, then enable `/computer-use on`. The extension resolves authenticated physical targets from the runtime registry: the current Sol and its corresponding Luna, or an unambiguous same-provider Luna. Missing or ambiguous targets produce an error, not a guessed route. Configure exact targets if needed:
+
+```text
+/computer-use models sol provider/model-sol
+/computer-use models luna provider/model-luna
+/computer-use models hybrid
+```
+
+Sol inspects semantics and hands a bounded plan to Luna with `desktop_model_phase`. Luna executes registered desktop tools and verifies results; a difficult, state-verified blocker permits **one** explicit escalation to Sol, which finishes the task without bouncing back. Ordinary OFF prompts use the original physical model. `/model` shows `computer-use/sol-luna`; the host footer and assistant messages show the actual physical dispatch. Hybrid requires Pi's `registerVirtualModel` API; native tools remain loadable without it. Preferences follow the session branch; no global default is changed.
+
+Switching models may lose prompt-cache benefits. Both receive the same conversation, so large history still costs tokens. **No quota reduction is claimed until a task-level benchmark**; the automated routing test uses a fake provider, not a billing measurement.
 
 ## Architecture
 
@@ -100,7 +118,9 @@ The socket defaults to `$XDG_RUNTIME_DIR/pi-computer.sock`. Required safety capa
 
 ## Screenshots, quota, and limits
 
-Semantic output is the default: observations do **not** include images unless explicitly requested. Prefer `desktop_search_seen` → live `desktop_inspect` when the compact tree omits a control; batch verified actions; verify editable text semantically. Use a **small screenshot crop only for information not available through accessibility**. Some browser pages/custom widgets remain inaccessible, so screenshot-free operation is not a universal guarantee.
+Use **AT-SPI, X11 window metadata, and GIO first**. Search omitted controls, inspect live nodes, batch verified actions, and verify text/state semantically. An image is allowed only for an **explicit user screenshot request** or a concrete blocker remaining after bounded semantic attempts.
+
+Before each capture, `desktop_visual_permission` records the reason and semantic checks and grants a **single-use permit bound to the exact capture tool and crop**. This covers screenshots, visual inspection, and observe's `screenshot:true`; grant and capture must be separate turns. Prefer a small node/rectangle crop; full screen needs a stated layout requirement or explicit full-screen request. The gate enforces permit use, **not independent verification of the model's rationale**. Some custom widgets remain inaccessible; screenshot-free operation is not universal.
 
 Root dirty rectangles are merged changed **64×64 tiles across the whole display**, not quadrants. `desktop_dirty_regions` returns metadata only but still acquires a raw root frame. Cinnamon root XDamage is incomplete, so empty damage queues do not justify skipping capture. Captures suspend feedback, but X-server synchronization is not a universal compositor presentation fence.
 
@@ -141,6 +161,10 @@ node tests/test-computer-use-mode.mjs
 node --test tests/test-computer-use-notification.mjs
 node tests/test-extension.mjs
 node tests/test-real-pi-load.mjs
+node tests/test-computer-use-routing.mjs
+node tests/test-real-pi-routing.mjs
+node tests/test-visual-policy.mjs
+node tests/test-computer-use-safety-gates.mjs
 node tests/test-daemon-autostart.mjs
 node tests/test-daemon-autostart-real.mjs
 node tests/test-daemon-upgrade.mjs

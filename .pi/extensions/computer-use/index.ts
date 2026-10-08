@@ -5,18 +5,23 @@ import { DesktopDaemonStartup } from "./daemon.js";
 import { DesktopWorkflow } from "./workflow.js";
 import { ComputerUseMode } from "./mode.js";
 import { registerComputerUseHandoff } from "./handoff.js";
+import { ComputerUseRouting } from "./routing.js";
+import { registerVisualPolicy } from "./visual-policy.js";
 
 /** Register model-callable tools for the local computer-use daemon. */
 export default function computerUseExtension(pi: ExtensionAPI): void {
 	const workflow = new DesktopWorkflow();
 	registerComputerUseTools(pi, workflow, new DesktopDaemonStartup());
 	const mode = new ComputerUseMode(pi);
-	registerComputerUseCommand(pi, mode);
+	const routing = new ComputerUseRouting(pi, mode);
+	registerComputerUseCommand(pi, mode, routing);
 	registerComputerUseHandoff(pi, mode);
-	pi.on("session_start", (event, ctx) => { mode.start(ctx, event.reason); });
-	pi.on("session_tree", (_event, ctx) => { mode.restore(ctx); });
+	registerVisualPolicy(pi, mode);
+	pi.on("session_start", (event, ctx) => { mode.start(ctx, event.reason); routing.start(ctx); });
+	pi.on("session_tree", (_event, ctx) => { mode.restore(ctx); routing.start(ctx); });
 	pi.on("before_agent_start", async (event, ctx) => {
 		mode.beforeStart(event, ctx);
+		routing.beforeStart(event, ctx);
 		await workflow.newRun(ctx.signal);
 	});
 	pi.on("tool_execution_start", (event, ctx) => { mode.toolStarted(event.toolName, ctx); });

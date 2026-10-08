@@ -90,17 +90,27 @@ assert.equal(reloaded.isEnabled(), true, "restore uses active branch, not abando
 reloaded.restore({ ...ctx, mode: "rpc", sessionManager: { getBranch: () => [] } });
 assert.equal(reloaded.isEnabled(), false);
 
-// One-off command still queues in this session, not a new session or toggled mode.
+// OFF never queues a one-off task, even when busy; enabling is an explicit command.
 await command.handler("Провери waiting list", { ...ctx, isIdle: () => false });
 assert.equal(mode.isEnabled(), false);
+assert.equal(harness.messages.length, 0);
+assert.match(notices.at(-1).message, /OFF.*не е изпратена/);
+assert.equal((await harness.emit("tool_call", ctx, { toolName: "desktop_observe", input: {} }))[0].block, true);
+assert.equal((await harness.emit("tool_call", ctx, { toolName: "desktop_stop", input: {} }))[0], undefined);
+await command.handler("on", ctx);
+assert.equal((await harness.emit("tool_call", ctx, { toolName: "desktop_observe", input: {} }))[0], undefined);
+await command.handler("Провери waiting list", { ...ctx, isIdle: () => false });
+assert.equal(mode.isEnabled(), true);
 assert.equal(harness.messages.length, 1);
 assert.deepEqual(harness.messages[0].options, { deliverAs: "followUp" });
 mode.beforeStart(start(harness.messages[0].content), ctx);
 mode.setOutcome("error");
 await mode.notifyCompletion(mode.takeCompletion(), ctx);
 assert.equal(completed.at(-1), "error");
+await command.handler("off", ctx);
 
-// Desktop execution while OFF also notifies; metadata-only tools do not.
+// Direct toolStarted below is a lifecycle/transport fixture, not a model-issued tool_call:
+// the OFF gate above prevents desktop_observe from reaching it in a real Pi turn.
 mode.beforeStart(start("Прочети файла"), ctx);
 mode.toolStarted("desktop_ping", ctx);
 mode.toolStarted("desktop_metrics", ctx);
@@ -152,7 +162,7 @@ await unavailable.notifyCompletion("completed", { ...ctx, signal: abort.signal }
 assert.equal(notices.filter(n => n.level === "warning").length, warningsBeforeAbort);
 await unavailable.notifyCompletion("completed", ctx);
 await unavailable.notifyCompletion("completed", ctx);
-assert.equal(notices.filter(n => n.level === "warning").length, 1);
+assert.equal(notices.filter(n => n.level === "warning").length, warningsBeforeAbort + 1);
 // Monotonic whole-request timing, isolated per session, with no real clock/timers.
 let now = 1000;
 const ticks = new Map();
@@ -293,6 +303,7 @@ const { Check } = require("typebox/value");
 assert.equal(Check(handoff.parameters, { reason: "login", instructions: "Влез в сайта и напиши готово." }), true);
 assert.equal(Check(handoff.parameters, { reason: "login", instructions: "step", password: "secret" }), false);
 assert.equal(Check(handoff.parameters, { reason: "made-up", instructions: "step" }), false);
+handoffMode.setEnabled(true, handoffCtx);
 handoffMode.beforeStart(start(computerUseMessage("Провери календара")), handoffCtx);
 const asked = await handoff.execute("handoff-1", { reason: "login", instructions: "Влез в отворения сайт и напиши готово." }, undefined, undefined, handoffCtx);
 assert.equal(JSON.parse(asked.content[0].text).status, "action_required");
@@ -300,7 +311,7 @@ assert.equal(handoffSent.length, 0, "OS notification is final-only, so abort can
 assert.match(handoffNotices.at(-1).text, /Action required/);
 assert.equal(handoffMode.isWaitingForUser(), true);
 const blocked = await handoffHarness.emit("tool_call", handoffCtx, { toolName: "desktop_click" });
-assert.equal(blocked[0].block, true);
+assert.ok(blocked.some(result => result?.block), "handoff blocker still applies when mode is ON");
 for (const toolName of ["desktop_stop", "desktop_ping", "desktop_metrics", "desktop_request_user", "read"])
 	assert.equal((await handoffHarness.emit("tool_call", handoffCtx, { toolName }))[0], undefined);
 handoffMode.setOutcome("completed"); // Model can settle normally without task success.

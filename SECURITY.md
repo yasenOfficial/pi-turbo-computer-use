@@ -4,6 +4,10 @@ This experimental extension acts on the real X11 desktop using the current user'
 
 ## Safety boundaries
 
+- OFF blocks registered desktop observation/actions, visual/model handoffs, and task submission. Only emergency Stop and metadata-only ping/metrics remain available; it cannot revoke already-dispatched tools/input. This host-tool gate is not a sandbox for arbitrary shell commands or other extensions.
+- Every registered image capture requires a single-use exact tool/target permit citing an explicit screenshot request or remaining semantic blocker. The model supplies that rationale; the gate cannot independently verify its truth. Authorization and capture cannot share an assistant batch.
+- Optional hybrid routing is visible in the same Pi session and uses authenticated physical targets only. Both models receive the same conversation under their provider's data policy; model switching is not data anonymization. No nested classifier/model call is used.
+
 - User-only Unix socket (`0600`) and permanent user-owned lock inode.
 - Emergency Stop bypasses the action mutex, is sticky, and must not be reset by automatic startup or upgrade.
 - Input dispatch acknowledgment is not a guarantee of final UI state. Sent actions with timeout/disconnect/cancellation have uncertain outcomes; do not automatically replay them.

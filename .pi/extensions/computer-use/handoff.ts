@@ -33,7 +33,20 @@ export function registerComputerUseHandoff(pi: ExtensionAPI, mode: ComputerUseMo
 			};
 		},
 	});
+	const blockedSiblings = new Set<string>();
+	pi.on("message_end", (event) => {
+		if (event.message.role !== "assistant") return;
+		blockedSiblings.clear();
+		const calls = event.message.content.filter((part) => part.type === "toolCall");
+		if (calls.some((call) => call.name === "desktop_request_user")) {
+			for (const call of calls) {
+				if (call.name.startsWith("desktop_") && !["desktop_request_user", "desktop_stop", "desktop_ping", "desktop_metrics"].includes(call.name)) blockedSiblings.add(call.id);
+			}
+		}
+	});
+	pi.on("before_agent_start", () => blockedSiblings.clear());
 	pi.on("tool_call", event => {
+		if (blockedSiblings.has(event.toolCallId)) return { block: true, reason: "Action required must not run alongside desktop actions. End the turn and wait for the user." };
 		if (mode.isWaitingForUser() && event.toolName.startsWith("desktop_")
 			&& !["desktop_request_user", "desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName)) {
 			return { block: true, reason: "Computer use is waiting for a user action. Explain the required step and end the turn; resume only after their reply." };

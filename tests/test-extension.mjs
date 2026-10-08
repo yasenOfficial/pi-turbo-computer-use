@@ -184,33 +184,66 @@ try {
 	});
 	const extensionPath = path.resolve(".pi/extensions/computer-use/index.ts");
 	const extension = await jiti.import(extensionPath, { default: true });
+	// Faithful host fixture: Pi retains every handler per event, in registration order.
+	// Direct tool.execute calls below intentionally test IPC wire formats only; tool_call
+	// permission/phase gates are exercised independently in the routing/visual tests.
+	const entries = [];
+	const notifications = [];
+	const physicalModel = { provider: "fixture", id: "fixture-sol", api: "fixture" };
+	const fixtureContext = { mode: "print", hasUI: false, signal: undefined, model: physicalModel,
+		modelRegistry: { getAvailable: () => [physicalModel], find: (provider, id) =>
+			provider === physicalModel.provider && id === physicalModel.id ? physicalModel : undefined },
+		sessionManager: { getBranch: () => entries }, isIdle: () => true,
+		ui: { notify: (message, level) => notifications.push({ message, level }), setStatus: () => {} } };
+	function listenerRegistry() {
+		const handlers = new Map();
+		const listeners = new Map();
+		return { handlers, count: (name) => listeners.get(name)?.length ?? 0, on(name, handler) {
+			if (!listeners.has(name)) {
+				listeners.set(name, []);
+				handlers.set(name, async (event = {}, context = fixtureContext) => {
+					const results = [];
+					for (const listener of listeners.get(name)) results.push(await listener(event, context));
+					return results;
+				});
+			}
+			listeners.get(name).push(handler);
+			return () => {
+				const list = listeners.get(name);
+				const index = list.indexOf(handler);
+				if (index >= 0) list.splice(index, 1);
+			};
+		} };
+	}
 	const tools = new Map();
-	const handlers = new Map();
+	const { handlers, on, count } = listenerRegistry();
 	const commands = new Map();
 	const sent = [];
-	extension({ registerTool: (tool) => tools.set(tool.name, tool),
+	extension({ registerTool: (tool) => tools.set(tool.name, tool), registerVirtualModel: () => {},
 		registerCommand: (name, options) => commands.set(name, options),
 		getAllTools: () => [...tools.keys()].map((name) => ({ name })),
 		getActiveTools: () => [...tools.keys()],
-		sendUserMessage: (content, options) => sent.push({ content, options }),
-		on: (name, handler) => {
-		handlers.set(name, handler);
-		return () => handlers.delete(name);
-	} });
+		appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+		setModel: async () => true,
+		sendUserMessage: (content, options) => sent.push({ content, options }), on });
 	assert.equal(activity.length, 0, "extension factory must not open sockets");
-	assert.deepEqual([...handlers.keys()], ["tool_call", "session_start", "session_tree", "before_agent_start", "tool_execution_start", "agent_before_settle", "agent_settled", "session_shutdown"]);
+	for (const name of ["tool_call", "session_start", "session_tree", "before_agent_start", "tool_execution_start", "agent_before_settle", "agent_settled", "session_shutdown", "model_select", "message_end"])
+		assert.ok(handlers.has(name), `missing lifecycle listener: ${name}`);
+	assert.ok(count("tool_call") >= 3 && count("before_agent_start") >= 2 && count("agent_settled") >= 3,
+		"routing, visual policy, and mode/workflow handlers must coexist per event");
 	assert.equal(tools.get("desktop_observe").promptGuidelines.length, 1);
 	assert.match(tools.get("desktop_observe").promptGuidelines[0], /Minimize images and model round trips/);
 	assert.match(tools.get("desktop_observe").promptGuidelines[0], /Do not recapture information already available semantically/);
-	assert.equal(tools.size, 22, `expected all 22 tools, got ${tools.size}`);
+	assert.equal(tools.size, 24, `expected all 24 tools, got ${tools.size}`);
+	assert.equal(tools.get("desktop_model_phase").exposure, "model-only");
+	assert.equal(tools.get("desktop_visual_permission").exposure, "model-only");
 	assert.equal(tools.get("desktop_request_user").exposure, "model-only");
 	assert.ok(tools.has("desktop_ping"), "desktop_ping was not registered");
 	const command = commands.get("computer-use");
 	assert.ok(command, "slash command was not registered");
-	const notifications = [];
-	const ctx = (idle) => ({ isIdle: () => idle, ui: { notify: (message, level) => notifications.push({ message, level }) } });
+	const ctx = (idle) => ({ ...fixtureContext, isIdle: () => idle });
 	await command.handler("", ctx(true));
-	assert.match(notifications.at(-1).message, /22 registered desktop_\* tools \(22 active\)/);
+	assert.match(notifications.at(-1).message, /24 registered desktop_\* tools \(24 active\)/);
 	assert.match(notifications.at(-1).message, /connectivity and input state not checked/);
 	await command.handler("status", ctx(false));
 	assert.match(notifications.at(-1).message, /desktop_ping/);
@@ -219,6 +252,18 @@ try {
 	assert.equal(sent.length, 0, "help and instructions must not submit a task");
 	assert.equal(received.length, 0, "command help must not contact the daemon");
 	assert.equal(activity.length, 0, "command help must not start workflow activity");
+	const guard = async (toolName, input = {}) => (await handlers.get("tool_call")({ toolName, input }, fixtureContext))
+		.filter((result) => result?.block);
+	for (const toolName of ["desktop_observe", "desktop_click", "desktop_request_user", "desktop_model_phase", "desktop_visual_permission"])
+		assert.match((await guard(toolName))[0]?.reason ?? "", /OFF/, `${toolName} must be blocked while OFF`);
+	for (const toolName of ["desktop_stop", "desktop_ping", "desktop_metrics"])
+		assert.equal((await guard(toolName)).length, 0, `${toolName} must remain available while OFF`);
+	await command.handler("  Open the editor and save  ", ctx(true));
+	assert.equal(sent.length, 0, "OFF must not queue the desktop task or turn mode ON");
+	assert.match(notifications.at(-1).message, /OFF.*не е изпратена/);
+	await command.handler("on", ctx(true));
+	assert.equal(entries.at(-1).data.enabled, true);
+	assert.equal((await guard("desktop_observe")).length, 0, "ON allows ordinary semantic observations");
 	await command.handler("  Open the editor and save  ", ctx(true));
 	assert.equal(sent.length, 1);
 	assert.equal(sent[0].options, undefined);
@@ -236,7 +281,7 @@ try {
 	const { registerComputerUseCommand } = await jiti.import(path.resolve(".pi/extensions/computer-use/command.ts"));
 	let failedCommand;
 	registerComputerUseCommand({ registerCommand: (_name, options) => { failedCommand = options; },
-		sendUserMessage: () => { throw new Error("session is closed"); } });
+		sendUserMessage: () => { throw new Error("session is closed"); } }, { isEnabled: () => true });
 	await failedCommand.handler("Try it", ctx(true));
 	assert.match(notifications.at(-1).message, /Could not submit computer-use task: session is closed.*try again/);
 	assert.equal(notifications.at(-1).level, "error");
@@ -425,7 +470,8 @@ try {
 	assert.deepEqual(activity.map(({ action }) => action), ["begin", "end"]);
 	assert.equal(activity[0].token, activity[1].token);
 	const runAbort = new AbortController();
-	await handlers.get("before_agent_start")({}, { signal: runAbort.signal });
+	await handlers.get("before_agent_start")({ prompt: "fixture ordinary task", systemPromptOptions: { sections: {} } },
+		{ ...fixtureContext, signal: runAbort.signal });
 	await tools.get("desktop_inspect").execute("second-run", { id: "n1" });
 	assert.deepEqual(activity.map(({ action }) => action), ["begin", "end", "begin"]);
 	runAbort.abort();
@@ -570,9 +616,10 @@ try {
 
 	// Exercise the new tool after existing index-sensitive assertions, with its own workflow.
 	const launchTools = new Map();
-	const launchHandlers = new Map();
+	const { handlers: launchHandlers, on: onLaunch } = listenerRegistry();
 	extension({ registerTool: (tool) => launchTools.set(tool.name, tool), registerCommand: () => {},
-		on: (name, handler) => launchHandlers.set(name, handler) });
+		registerVirtualModel: () => {}, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+		on: onLaunch });
 	const launchTool = launchTools.get("desktop_launch_app");
 	assert.ok(launchTool, "launch must be registered as a direct model tool");
 	assert.equal(launchTool.annotations.readOnlyHint, false);
@@ -637,8 +684,10 @@ try {
 
 	legacyMode = true;
 	const legacyTools = new Map();
-	const legacyHandlers = new Map();
-	extension({ registerTool: (tool) => legacyTools.set(tool.name, tool), registerCommand: () => {}, on: (name, handler) => legacyHandlers.set(name, handler) });
+	const { handlers: legacyHandlers, on: onLegacy } = listenerRegistry();
+	extension({ registerTool: (tool) => legacyTools.set(tool.name, tool), registerCommand: () => {},
+		registerVirtualModel: () => {}, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
+		on: onLegacy });
 	const oldWarnings = console.warn;
 	const warnings = [];
 	console.warn = (message) => warnings.push(message);

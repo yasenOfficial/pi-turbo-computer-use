@@ -52,7 +52,14 @@ export class ComputerUseMode {
 	private ticker?: ReturnType<typeof setInterval>;
 	constructor(private readonly pi: ExtensionAPI,
 		private readonly notify = sendDesktopCompletion,
-		private readonly timer: TimerRuntime = { now: () => performance.now(), setInterval, clearInterval }) {}
+		private readonly timer: TimerRuntime = { now: () => performance.now(), setInterval, clearInterval }) {
+		pi.on("tool_call", (event) => {
+			if (!this.enabled && event.toolName.startsWith("desktop_")
+				&& !["desktop_stop", "desktop_ping", "desktop_metrics"].includes(event.toolName)) {
+				return { block: true, reason: "Computer use is OFF. Do not observe or operate the desktop. Ask the user to run /computer-use on; never enable it automatically." };
+			}
+		});
+	}
 
 	isEnabled(): boolean { return this.enabled; }
 
@@ -103,7 +110,7 @@ export class ComputerUseMode {
 		const activity = this.ensureActivity(ctx);
 		// A new user prompt may resume the work; observe the live desktop again.
 		activity.actionRequired = undefined;
-		activity.requested ||= this.enabled || Boolean(event.prompt?.startsWith(COMPUTER_USE_INSTRUCTIONS + "\n\nUser task (verbatim):\n"));
+		activity.requested ||= this.enabled;
 		this.watch(ctx.signal);
 		this.render(ctx);
 		this.syncTicker();
