@@ -205,15 +205,15 @@ timed.setOutcome("completed");
 assert.equal(timed.takeCompletion(), "completed");
 assert.equal(ticks.size, 0);
 assert.deepEqual(savedTiming(), { durationMs: 23750, outcome: "completed" });
-assert.match(bar(), /Computer use ON · последно: 00:23/);
+assert.match(bar(), /Computer use ON · time: 00:23/);
 assert.equal(timed.takeCompletion(), undefined);
 assert.equal(timedHarness.entries.filter(e => e.customType === "computer-use-timing-v1").length, 1);
 const settledPaints = paints;
 now += 10000;
-assert.match(bar(), /последно: 00:23/);
+assert.match(bar(), /time: 00:23/);
 assert.equal(paints, settledPaints, "settled timer never refreshes the UI");
 for (const width of [0, 1, 16, 35, 80, 150])
-	assert.equal(visibleWidth(computerUseBar(width, " · последно: 00:23 (abort)")), width);
+	assert.equal(visibleWidth(computerUseBar(width, " · time: 00:23 (abort)")), width);
 assert.equal(formatComputerUseDuration(0), "00:00");
 assert.equal(formatComputerUseDuration(59999), "00:59");
 assert.equal(formatComputerUseDuration(60000), "01:00");
@@ -237,7 +237,7 @@ assert.equal(resumed.isEnabled(), false, "startup reset remains OFF on later rel
 resumed.setEnabled(true, timedCtx);
 resumed.start(timedCtx, "reload");
 assert.equal(resumed.isEnabled(), true, "deliberate ON survives reload in the same session");
-assert.match(bar(), /последно: 00:23/);
+assert.match(bar(), /time: 00:23/);
 resumed.start(timedCtx, "resume");
 assert.equal(resumed.isEnabled(), false, "session replacement defaults OFF");
 
@@ -254,7 +254,7 @@ assert.equal(timed.takeCompletion(), undefined);
 assert.deepEqual(savedTiming(), { durationMs: 3200, outcome: "aborted" });
 await timed.notifyCompletion(undefined, timedCtx);
 assert.deepEqual(timingNotifications, []);
-assert.match(bar(), /последно: 00:03 \(abort\)/);
+assert.match(bar(), /time: 00:03 \(abort\)/);
 
 // Switching OFF stops display refresh, not timing; tools retain initial thinking time.
 timed.beforeStart(start("Календар"), timedCtx);

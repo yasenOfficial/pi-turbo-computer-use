@@ -207,7 +207,7 @@ export class ComputerUseMode {
 		if (activity && (activity.requested || activity.usedDesktop))
 			return ` · ${formatComputerUseDuration(this.elapsed(activity))}${activity.cancelled ? " (abort)" : activity.actionRequired ? " · Action required" : ""}`;
 		if (!this.lastTiming) return "";
-		return ` · последно: ${formatComputerUseDuration(this.lastTiming.durationMs)}${this.lastTiming.outcome === "aborted" ? " (abort)" : this.lastTiming.outcome === "error" ? " (error)" : this.lastTiming.outcome === "action_required" ? " · Action required" : ""}`;
+		return ` · time: ${formatComputerUseDuration(this.lastTiming.durationMs)}${this.lastTiming.outcome === "aborted" ? " (abort)" : this.lastTiming.outcome === "error" ? " (error)" : this.lastTiming.outcome === "action_required" ? " · Action required" : ""}`;
 	}
 
 	private cancel(activity: Activity): void {

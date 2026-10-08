@@ -79,7 +79,7 @@ Example:
 
 > Open the text editor, create a new note with “Hello”, and save it in a new file. Do not overwrite existing files.
 
-While ON, normal prompts receive computer-use operating rules. The bar shows `Computer use ON · 00:12`, then `Computer use ON · последно: 00:23`. Timing begins before model execution and includes tool work/continuations, but not time waiting in Pi's input queue. Turning OFF hides the bar and blocks further desktop tool calls. It does not cancel an already-running tool or revoke an already-issued input event. The agent cannot auto-enable the mode.
+While ON, normal prompts receive computer-use operating rules. The bar shows `Computer use ON · 00:12`, then `Computer use ON · time: 00:23`. Timing begins before model execution and includes tool work/continuations, but not time waiting in Pi's input queue. Turning OFF hides the bar and blocks further desktop tool calls. It does not cancel an already-running tool or revoke an already-issued input event. The agent cannot auto-enable the mode.
 
 For a user-only blocker, the agent calls `desktop_request_user`, explains the concrete step, ends its turn, and sends **Pi · Action required** at settlement instead of a completion notification. Complete the step directly and reply **“готово” / “done”**; the agent re-observes and continues. There is no background polling or second model orchestrator. Saved browser login may be used through the normal browser autofill UI for the matching requested site/account, unless the task forbids it. Password extraction/reveal, account creation, OTP retrieval, and security bypass are not authorized. This is model guidance and explicit handoff, not guaranteed automatic recognition of every login screen.
 
