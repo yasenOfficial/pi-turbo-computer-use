@@ -56,7 +56,7 @@ try {
 	await session.bindExtensions({ mode: "print", onError: error => extensionErrors.push(error) });
 	const activeDesktop = () => session.getActiveToolNames().filter((name) => name.startsWith("desktop_"));
 	const registeredDesktop = session.getAllTools().filter(({ name }) => name.startsWith("desktop_"));
-	assert.equal(registeredDesktop.length, 24, "all desktop tools remain registered behind the hard OFF gate");
+	assert.equal(registeredDesktop.length, 25, "all desktop tools remain registered behind the hard OFF gate");
 	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"],
 		"real Pi fresh startup declares only Stop and metadata tools");
 	const otherTools = session.getActiveToolNames().filter(name => !name.startsWith("desktop_"));
@@ -67,6 +67,11 @@ try {
 	assert.equal(Check(launchSchema, { query: "STM32CubeIDE" }), true);
 	assert.equal(Check(launchSchema, { query: "CubeIDE", app_id: "xed.desktop" }), false);
 	assert.equal(Check(launchSchema, { query: "CubeIDE", extra: true }), false);
+	const pasteSchema = session.getToolDefinition("desktop_paste_text")?.parameters;
+	assert.ok(pasteSchema, "real Pi registers paste");
+	assert.equal(Check(pasteSchema, { text: "Unicode 🌐", window_title: "Test window" }), true);
+	assert.equal(Check(pasteSchema, { text: "a", target: {} }), false);
+	assert.equal(Check(pasteSchema, { text: "a", target: { id: "1", extra: true } }), false);
 	const phaseSchema = session.getToolDefinition("desktop_model_phase")?.parameters;
 	assert.ok(phaseSchema);
 	assert.equal(Check(phaseSchema, { phase: "execute", plan: "Inspect first, then act" }), true);
@@ -85,7 +90,7 @@ try {
 	}
 	const notices = [];
 	await slashCommand.handler("", { ui: { notify: (text) => notices.push(text) } });
-	assert.match(notices.at(-1), /24 registered desktop_\* tools/);
+	assert.match(notices.at(-1), /25 registered desktop_\* tools/);
 	await slashCommand.handler("instructions", { ui: { notify: (text) => notices.push(text) } });
 	assert.match(notices.at(-1), /removed/);
 	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
@@ -99,6 +104,7 @@ try {
 	assert.match((await toolCall("desktop_observe", "off-observe"))?.reason ?? "", /OFF/,
 		"real Pi tool_call blocks observation at fresh OFF startup");
 	assert.match((await toolCall("desktop_click", "off-click"))?.reason ?? "", /OFF/);
+	assert.match((await toolCall("desktop_paste_text", "off-paste"))?.reason ?? "", /OFF/);
 	assert.match((await toolCall("desktop_request_user", "off-handoff"))?.reason ?? "", /OFF/);
 	assert.match((await toolCall("desktop_model_phase", "off-phase"))?.reason ?? "", /OFF/);
 	assert.equal((await toolCall("desktop_ping", "off-ping"))?.block, undefined);
@@ -130,8 +136,8 @@ try {
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-routing-preference-v1").length, 0,
 		"summary must not change routing preferences");
 	await session.prompt("/computer-use on");
-	assert.equal(activeDesktop().length, 17, `expected ON baseline, got ${activeDesktop().join(", ")}`);
-	for (const name of ["desktop_launch_app", "desktop_observe", "desktop_batch", "desktop_request_user", "desktop_visual_permission"])
+	assert.equal(activeDesktop().length, 18, `expected ON baseline, got ${activeDesktop().join(", ")}`);
+	for (const name of ["desktop_launch_app", "desktop_observe", "desktop_batch", "desktop_paste_text", "desktop_request_user", "desktop_visual_permission"])
 		assert.ok(activeDesktop().includes(name), `${name} is required in the ON baseline`);
 	for (const name of ["desktop_screenshot", "desktop_inspect_visual", "desktop_model_phase", "desktop_drag", "desktop_type", "desktop_dirty_regions"])
 		assert.ok(!activeDesktop().includes(name), `${name} must stay inactive until eligible`);
@@ -155,7 +161,7 @@ try {
 	assert.ok(permission, "model-only permission is registered in the real resource loader");
 	const grantResult = await permission.execute("real-permit", grantParams, undefined, undefined, { signal: undefined });
 	assert.equal(JSON.parse(grantResult.content[0].text).single_use, true);
-	assert.equal(activeDesktop().length, 18, "successful grant adds exactly one capture declaration");
+	assert.equal(activeDesktop().length, 19, "successful grant adds exactly one capture declaration");
 	assert.ok(activeDesktop().includes("desktop_screenshot") && !activeDesktop().includes("desktop_inspect_visual"));
 	assert.equal((await toolCall("desktop_observe", "semantic-after-grant"))?.block, undefined);
 	await session.extensionRunner.emit({ type: "tool_execution_end", toolCallId: "semantic-after-grant",
@@ -167,22 +173,22 @@ try {
 	assert.ok(activeDesktop().includes("desktop_screenshot"), "keep declaration until tool_execution_end");
 	await session.extensionRunner.emit({ type: "tool_execution_end", toolCallId: "real-capture-gate",
 		toolName: "desktop_screenshot", result: undefined, isError: false });
-	assert.equal(activeDesktop().length, 17, "completion withdraws the one-shot capture declaration");
+	assert.equal(activeDesktop().length, 18, "completion withdraws the one-shot capture declaration");
 	assert.ok(!activeDesktop().includes("desktop_screenshot"));
 	assert.match((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "real-reuse",
 		toolName: "desktop_screenshot", input: region }))?.reason ?? "", /Visual capture blocked/);
 	const abortGrant = new AbortController();
 	await permission.execute("real-abort", grantParams, abortGrant.signal, undefined, { signal: undefined });
-	assert.equal(activeDesktop().length, 18);
+	assert.equal(activeDesktop().length, 19);
 	abortGrant.abort();
-	assert.equal(activeDesktop().length, 17, "abort withdraws an unused capture declaration");
+	assert.equal(activeDesktop().length, 18, "abort withdraws an unused capture declaration");
 	assert.match((await session.extensionRunner.emitToolCall({ type: "tool_call", toolCallId: "real-abort-gate",
 		toolName: "desktop_screenshot", input: region }))?.reason ?? "", /Visual capture blocked/);
 	assert.equal(existsSync(process.env.COMPUTER_USE_SOCKET), false, "grant and gate never start a daemon");
 	await session.reload(); // Same session: persisted boolean restores without model/desktop work.
 	const restored = await session.extensionRunner.emitBeforeAgentStart("Провери waiting list", undefined, { cwd });
 	assert.match(restored.systemPromptOptions.sections.computer_use_mode, /Computer use mode is ON/);
-	assert.equal(activeDesktop().length, 17, "reload restores the ON baseline, not optional captures");
+	assert.equal(activeDesktop().length, 18, "reload restores the ON baseline, not optional captures");
 	await session.prompt("/computer-use toggle");
 	const offPrompt = await session.extensionRunner.emitBeforeAgentStart("обикновен въпрос", undefined, { cwd });
 	assert.equal(offPrompt.systemPromptOptions.sections.computer_use_mode, undefined);
@@ -191,7 +197,7 @@ try {
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, false);
 	await session.reload(); // Discard fixture activity; no settlement and no OS notification.
 	await session.prompt("/computer-use on");
-	assert.equal(activeDesktop().length, 17);
+	assert.equal(activeDesktop().length, 18);
 	await session.prompt("/computer-use debug on restart-test");
 	assert.equal(debugPrefs().at(-1).data.enabled, true);
 	assert.equal(existsSync(debugDirectory), false, "debug cannot write without a settled task");
@@ -212,7 +218,7 @@ try {
 	assert.deepEqual(extensionErrors, [], "real event handlers must not fail");
 	assert.equal(session.messages.length, messageCount, "help/mode commands must not start an agent turn");
 	assert.equal(existsSync(process.env.COMPUTER_USE_SOCKET), false, "load/help/mode must not start a daemon");
-	console.log(`Real Pi extension load passed: 24 registered desktop tools, 3 OFF/17 ON active, help, mode toggle, default OFF startup, system-only prompt rules and reload persistence; no daemon, notification or model call.`);
+	console.log(`Real Pi extension load passed: 25 registered desktop tools, 3 OFF/18 ON active, help, mode toggle, default OFF startup, system-only prompt rules and reload persistence; no daemon, notification or model call.`);
 } finally {
 	session?.dispose();
 	if (previousSocket === undefined) delete process.env.COMPUTER_USE_SOCKET;

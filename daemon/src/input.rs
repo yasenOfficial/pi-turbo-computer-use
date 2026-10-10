@@ -9,6 +9,7 @@ use std::io;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
+use x11rb::protocol::xkb::{self, ConnectionExt as _};
 use x11rb::protocol::xproto::{
     AtomEnum, ClientMessageData, ClientMessageEvent, ConnectionExt as _, EventMask, Window,
 };
@@ -535,6 +536,58 @@ impl X11Input {
         })
     }
 
+    /// Select exactly one paste chord before taking clipboard ownership.
+    /// A Latin v in the *active* XKB group permits Ctrl+V; otherwise use the
+    /// language-independent Shift+Insert. Never switch the user's layout and
+    /// never retry with a second shortcut after any input was dispatched.
+    pub fn preflight_paste(&self) -> InputResult<PasteShortcut> {
+        check_stop(self.safety.as_ref())?;
+        let shortcut = self.choose_paste_shortcut()?;
+        let (modifier, key) = shortcut.keycodes();
+        self.preflight(KEY_PRESS, modifier)?;
+        self.preflight(KEY_PRESS, key)?;
+        Ok(shortcut)
+    }
+
+    fn choose_paste_shortcut(&self) -> InputResult<PasteShortcut> {
+        let mapping = self.mapping()?;
+        // If the extension cannot report the active group, never assume that
+        // the primary group's Latin v is active. Fail closed to Shift+Insert.
+        let group = self
+            .conn
+            .xkb_use_extension(1, 0)
+            .ok()
+            .and_then(|cookie| cookie.reply().ok())
+            .filter(|reply| reply.supported)
+            .and_then(|_| {
+                self.conn
+                    .xkb_get_state(u16::from(xkb::ID::USE_CORE_KBD))
+                    .ok()
+            })
+            .and_then(|cookie| cookie.reply().ok())
+            .map(|reply| u8::from(reply.group));
+        select_paste_shortcut(&mapping, group)
+    }
+
+    /// Check that both the selected group and keycodes are still the same
+    /// immediately before the gesture. An intervening change never triggers
+    /// a second shortcut or a language switch.
+    pub fn paste(&self, shortcut: PasteShortcut) -> InputResult<()> {
+        check_stop(self.safety.as_ref())?;
+        if self.choose_paste_shortcut()? != shortcut {
+            return Err(
+                invalid("paste shortcut keymap or active group changed before input").into(),
+            );
+        }
+        let (modifier, key) = shortcut.keycodes();
+        self.gesture(|g| {
+            g.keycode(modifier, true)?;
+            g.keycode(key, true)?;
+            g.keycode(key, false)?;
+            g.keycode(modifier, false)
+        })
+    }
+
     /// Press a key or chord, e.g. `Enter`, `Ctrl+L`, or `Shift+Tab`.
     pub fn key(&self, key: &str) -> InputResult<()> {
         let parts: Vec<&str> = key.split('+').collect();
@@ -666,6 +719,52 @@ fn type_events(g: &mut Gesture<'_>, keys: &[(u8, bool)], shift: Option<u8>) -> I
     Ok(())
 }
 
+/// XTEST keycodes are prepared once; no text character is synthesized.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PasteShortcut {
+    CtrlV { ctrl: u8, v: u8 },
+    ShiftInsert { shift: u8, insert: u8 },
+}
+impl PasteShortcut {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::CtrlV { .. } => "ctrl_v",
+            Self::ShiftInsert { .. } => "shift_insert",
+        }
+    }
+    fn keycodes(self) -> (u8, u8) {
+        match self {
+            Self::CtrlV { ctrl, v } => (ctrl, v),
+            Self::ShiftInsert { shift, insert } => (shift, insert),
+        }
+    }
+}
+fn select_paste_shortcut(
+    mapping: &KeyboardMapping,
+    active_group: Option<u8>,
+) -> InputResult<PasteShortcut> {
+    if let Some(v) =
+        active_group.and_then(|group| mapping.lookup_group_unshifted(b'v' as u32, group))
+    {
+        if let Some((ctrl, _)) = mapping.lookup(CTRL) {
+            if ctrl != v {
+                return Ok(PasteShortcut::CtrlV { ctrl, v });
+            }
+        }
+    }
+    let shift = mapping
+        .lookup(SHIFT)
+        .ok_or_else(|| invalid("unmapped Shift"))?
+        .0;
+    let (insert, shifted) = mapping
+        .lookup(0xff63)
+        .ok_or_else(|| invalid("unmapped Insert"))?;
+    if shifted || shift == insert {
+        return Err(invalid("unsupported paste chord mapping").into());
+    }
+    Ok(PasteShortcut::ShiftInsert { shift, insert })
+}
+
 fn validate_physical_text(text: &str) -> InputResult<()> {
     if text.chars().count() > 16_384 {
         return Err(invalid("physical text must be <= 16384 characters").into());
@@ -737,6 +836,23 @@ struct KeyboardMapping {
 }
 
 impl KeyboardMapping {
+    // XKB groups occupy pairs of columns in the core keymap. Do not guess
+    // when the active group has no explicit unshifted Latin v column.
+    fn lookup_group_unshifted(&self, symbol: u32, group: u8) -> Option<u8> {
+        if self.per_keycode == 0 {
+            return None;
+        }
+        let column = usize::from(group).checked_mul(2)?;
+        self.keysyms
+            .chunks_exact(self.per_keycode)
+            .enumerate()
+            .find_map(|(index, columns)| {
+                (columns.get(column) == Some(&symbol))
+                    .then(|| u8::try_from(usize::from(self.first) + index).ok())
+                    .flatten()
+            })
+    }
+
     // Columns 0/1 are the unshifted/shifted symbols in the primary group.
     fn lookup(&self, symbol: u32) -> Option<(u8, bool)> {
         if self.per_keycode == 0 {
@@ -790,6 +906,93 @@ mod tests {
         assert_eq!(map.lookup(0x41), Some((8, true)));
         assert_eq!(map.lookup(0x21), Some((9, true)));
         assert_eq!(map.lookup(0x42), None);
+    }
+
+    #[test]
+    fn paste_shortcut_does_not_require_a_latin_letter_in_the_keymap() {
+        let map = KeyboardMapping {
+            first: 8,
+            per_keycode: 4,
+            keysyms: vec![SHIFT, 0, 0, 0, 0xff63, 0, 0, 0, 0x0100_0432, 0, 0, 0],
+        };
+        assert!(map.lookup(b'v' as u32).is_none());
+        assert_eq!(
+            select_paste_shortcut(&map, Some(0)).unwrap(),
+            PasteShortcut::ShiftInsert {
+                shift: 8,
+                insert: 9
+            }
+        );
+        assert_eq!(
+            select_paste_shortcut(&map, None).unwrap(),
+            PasteShortcut::ShiftInsert {
+                shift: 8,
+                insert: 9
+            }
+        );
+    }
+
+    #[test]
+    fn paste_selects_only_one_active_group_chord_before_ownership() {
+        let map = KeyboardMapping {
+            first: 8,
+            per_keycode: 4,
+            keysyms: vec![
+                CTRL,
+                0,
+                0,
+                0,
+                SHIFT,
+                0,
+                0,
+                0,
+                0xff63,
+                0,
+                0,
+                0,
+                b'v' as u32,
+                b'V' as u32,
+                0x0100_0432,
+                0x0100_0412,
+            ],
+        };
+        assert_eq!(
+            select_paste_shortcut(&map, Some(0)).unwrap(),
+            PasteShortcut::CtrlV { ctrl: 8, v: 11 }
+        );
+        assert_eq!(
+            select_paste_shortcut(&map, Some(1)).unwrap(),
+            PasteShortcut::ShiftInsert {
+                shift: 9,
+                insert: 10
+            }
+        );
+        assert_eq!(
+            select_paste_shortcut(&map, None).unwrap(),
+            PasteShortcut::ShiftInsert {
+                shift: 9,
+                insert: 10
+            }
+        );
+        // Also select Ctrl+V when Latin is active only in the second group.
+        let mut reverse = map;
+        reverse.keysyms[12..16].copy_from_slice(&[
+            0x0100_0432,
+            0x0100_0412,
+            b'v' as u32,
+            b'V' as u32,
+        ]);
+        assert_eq!(
+            select_paste_shortcut(&reverse, Some(0)).unwrap(),
+            PasteShortcut::ShiftInsert {
+                shift: 9,
+                insert: 10
+            }
+        );
+        assert_eq!(
+            select_paste_shortcut(&reverse, Some(1)).unwrap(),
+            PasteShortcut::CtrlV { ctrl: 8, v: 11 }
+        );
     }
 
     #[test]

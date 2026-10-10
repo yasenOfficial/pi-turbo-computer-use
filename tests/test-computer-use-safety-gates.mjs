@@ -70,7 +70,7 @@ for (const [name, args] of [
 	["desktop_batch", { actions: [] }], ["desktop_launch_app", { app_id: "example.desktop" }],
 	["desktop_observe", {}], ["desktop_observe", { screenshot: true }],
 	["desktop_screenshot", region], ["desktop_inspect_visual", { id: "n1" }],
-	["desktop_set_text", { id: "n1", text: "test" }], ["desktop_click", { id: "n1" }],
+	["desktop_set_text", { id: "n1", text: "test" }], ["desktop_paste_text", { text: "test", target: { id: "n1" } }], ["desktop_click", { id: "n1" }],
 ]) {
 	const blocks = await off.gate(name, args);
 	assert.ok(blocks.some((result) => /OFF/.test(result.reason)), `${name} must be blocked by OFF`);

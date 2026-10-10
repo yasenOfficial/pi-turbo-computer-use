@@ -1,0 +1,245 @@
+{
+  "schema_version": 1,
+  "experiment": "fixture_execution_not_agent_strategy",
+  "isolated": true,
+  "model_provider_calls": 0,
+  "source": {
+    "baseline_commit": "04cd834be1fa05d4b8a21698d2e249134b844c18",
+    "working_tree_head": "04cd834be1fa05d4b8a21698d2e249134b844c18",
+    "sources": {
+      ".pi/extensions/computer-use/instructions.ts": {
+        "baseline_sha256": "37b630648c254c7ad12b6198186eb4481b9fabac3b84e9fae422e0c3d745309c",
+        "working_tree_sha256": "697b477de49337a10ccea535359b44ab2d0289ea1ff4dda17ff5a0fbb2cd28cb"
+      },
+      ".pi/extensions/computer-use/routing.ts": {
+        "baseline_sha256": "a738b4806b05e0a07e2cea1a27415e3ff9d6a13a908b9dafe8b53497a5974946",
+        "working_tree_sha256": "8d01bac626b07ca3013d9238c12241aad74a321d1097d409b082d70fe787a9fb"
+      },
+      ".pi/extensions/computer-use/tools.ts": {
+        "baseline_sha256": "1f3decf5fdd763023a67e6dc1b25e4e8973cf201eafdc3986c08cf0ac949647d",
+        "working_tree_sha256": "823048700532104d47ada242756dff5abd07db527cda930351709f543c2a55f7"
+      },
+      "daemon/src/input.rs": {
+        "baseline_sha256": "953f5f9000bda177039fb0aaa42a2741b56369f8b198d026d48bfbac4ca71440",
+        "working_tree_sha256": "eee078c0c2a3ec7a0ca72e9e76f5fe5f2ef1fed9cf1b41dd3cb95f7a2996214d"
+      },
+      "daemon/src/clipboard.rs": {
+        "baseline_sha256": null,
+        "working_tree_sha256": "2782e735a8a6006e66150f9080239702e985dc7c16ad69b75b703e5042fcd039"
+      }
+    },
+    "legacy_type_text_source_unchanged": true,
+    "baseline_native_binary_identity": null,
+    "note": "git show verifies source provenance only. An installed/native binary is not attributed to this commit."
+  },
+  "gui_working_tree_native_binary_sha256": "348eadf1e398d3dadecd68b258ab77117e8203385e7248593a2e9d8b0dcbead4",
+  "controlled_input_comparison": {
+    "scope": "same_working_tree_native_binary_private_browser_fixture",
+    "status": "verified",
+    "payload_ascii_characters": 150,
+    "legacy_type_text": {
+      "verified_result": true,
+      "wall_ms_including_discovery_and_verification": 868.73,
+      "daemon_requests": 7,
+      "input_dispatch_requests": 3,
+      "image_blocks": 0,
+      "dom_trusted_keydown": 150,
+      "dom_trusted_keyup": 150,
+      "dom_trusted_paste": 0,
+      "native_reported_paste_keyboard_events": null,
+      "model_tokens": null,
+      "agent_tool_calls": null,
+      "billed_cost": null
+    },
+    "clipboard_paste": {
+      "verified_result": true,
+      "wall_ms_including_discovery_and_verification": 1151.986,
+      "daemon_requests": 7,
+      "input_dispatch_requests": 3,
+      "image_blocks": 0,
+      "dom_trusted_keydown": 2,
+      "dom_trusted_keyup": 2,
+      "dom_trusted_paste": 1,
+      "native_reported_paste_keyboard_events": 4,
+      "model_tokens": null,
+      "agent_tool_calls": null,
+      "billed_cost": null
+    },
+    "limitations": "Browser DOM trusted key events, not X11 global event telemetry; fixed ASCII text and separate fresh fields, no model/agent run."
+  },
+  "results": [
+    {
+      "id": "create-200-line-text-file",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "sample_count": 3,
+        "wall_ms_p50": 0.3803580000000011,
+        "wall_ms_p95": 0.8339940000000041,
+        "operations_per_sample": [
+          2,
+          2,
+          2
+        ],
+        "operation_unit": "instrumented Node fs calls / fixed Python process spawn, not Pi tool calls",
+        "verified_result": true,
+        "desktop_calls": 0,
+        "image_blocks": 0,
+        "keyboard_events": null,
+        "model_messages": null,
+        "model_tokens": null,
+        "billed_cost": null
+      },
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "open-file-in-gui-editor",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "wall_ms": 644.072,
+        "daemon_requests": 2,
+        "input_dispatch_requests": 0,
+        "image_blocks": 0,
+        "reported_paste_keyboard_events": null,
+        "verified_result": true,
+        "model_messages": null,
+        "model_tokens": null,
+        "agent_tool_calls": null,
+        "billed_cost": null
+      },
+      "reason": null,
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "run-python-and-check-stdout",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "sample_count": 3,
+        "wall_ms_p50": 6.199554999999997,
+        "wall_ms_p95": 6.418669999999999,
+        "operations_per_sample": [
+          2,
+          2,
+          2
+        ],
+        "operation_unit": "instrumented Node fs calls / fixed Python process spawn, not Pi tool calls",
+        "verified_result": true,
+        "desktop_calls": 0,
+        "image_blocks": 0,
+        "keyboard_events": null,
+        "model_messages": null,
+        "model_tokens": null,
+        "billed_cost": null
+      },
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "local-website-button",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "wall_ms": 1823.887,
+        "daemon_requests": 7,
+        "input_dispatch_requests": 1,
+        "image_blocks": 0,
+        "reported_paste_keyboard_events": null,
+        "verified_result": true,
+        "model_messages": null,
+        "model_tokens": null,
+        "agent_tool_calls": null,
+        "billed_cost": null
+      },
+      "reason": null,
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "bulgarian-english-file-to-browser-form",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "wall_ms": 1255.729,
+        "daemon_requests": 6,
+        "input_dispatch_requests": 3,
+        "image_blocks": 0,
+        "reported_paste_keyboard_events": 4,
+        "verified_result": true,
+        "model_messages": null,
+        "model_tokens": null,
+        "agent_tool_calls": null,
+        "billed_cost": null
+      },
+      "reason": null,
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "edit-config",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "sample_count": 3,
+        "wall_ms_p50": 0.2793410000000023,
+        "wall_ms_p95": 0.3172660000000036,
+        "operations_per_sample": [
+          4,
+          4,
+          4
+        ],
+        "operation_unit": "instrumented Node fs calls / fixed Python process spawn, not Pi tool calls",
+        "verified_result": true,
+        "desktop_calls": 0,
+        "image_blocks": 0,
+        "keyboard_events": null,
+        "model_messages": null,
+        "model_tokens": null,
+        "billed_cost": null
+      },
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "open-existing-project-in-vscode",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "wall_ms": 1784.946,
+        "daemon_requests": 6,
+        "input_dispatch_requests": 0,
+        "image_blocks": 0,
+        "reported_paste_keyboard_events": null,
+        "verified_result": true,
+        "model_messages": null,
+        "model_tokens": null,
+        "agent_tool_calls": null,
+        "billed_cost": null
+      },
+      "reason": null,
+      "baseline": null,
+      "optimized": null
+    },
+    {
+      "id": "mixed-filesystem-and-gui",
+      "status": "fixture_pass",
+      "fixture_execution": {
+        "wall_ms": 1745.319,
+        "daemon_requests": 6,
+        "input_dispatch_requests": 3,
+        "image_blocks": 0,
+        "reported_paste_keyboard_events": 4,
+        "verified_result": true,
+        "model_messages": null,
+        "model_tokens": null,
+        "agent_tool_calls": null,
+        "billed_cost": null
+      },
+      "reason": null,
+      "baseline": null,
+      "optimized": null
+    }
+  ],
+  "warnings": [
+    "The baseline is a pinned source snapshot, not a baseline agent run or an authenticated native binary.",
+    "Filesystem/process samples are deterministic fixture operations; zero desktop calls is not evidence that an agent selected CLI tools.",
+    "Controlled same-binary legacy typing vs paste is a low-level browser fixture comparison, NOT an old-extension agent run, real Pi tool call, or proof of overall speed, token, billing, or quota savings.",
+    "Only explicitly passed isolated GUI fixture rows are eligible; other GUI cases and baseline/optimized outcomes remain null."
+  ]
+}

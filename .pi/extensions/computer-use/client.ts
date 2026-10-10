@@ -5,7 +5,7 @@ function errorMessage(value: unknown): string {
 	return value instanceof Error ? value.message : String(value);
 }
 
-const INPUT_COMMANDS = new Set(["batch", "click", "double_click", "drag", "focus_window", "launch_app", "set_text", "type", "keypress", "scroll"]);
+const INPUT_COMMANDS = new Set(["batch", "click", "double_click", "drag", "focus_window", "launch_app", "set_text", "type", "paste_text", "keypress", "scroll"]);
 const INPUT_OUTCOME_WARNING = "Operation outcome is uncertain: the daemon may still be executing input after this connection closes. Do not automatically retry. Observe the desktop first; if input continues, use the emergency-stop hotkey or desktop_stop (sticky until daemon restart).";
 
 /** Newline-delimited JSON client. Each request owns a socket, so concurrent tool
@@ -79,7 +79,7 @@ export class ComputerUseClient {
 						}
 						const response = parsed as DaemonResponse;
 						// Preserve partial batch steps and launch_app ambiguity matches for model-facing errors.
-						if ((response.ok === false || response.error) && !(request.cmd === "batch" && response.batch) && request.cmd !== "launch_app") {
+						if ((response.ok === false || response.error) && !(request.cmd === "batch" && response.batch) && request.cmd !== "launch_app" && request.cmd !== "paste_text") {
 							const detail = response.error ?? "daemon rejected the request";
 							return finish(new Error(typeof detail === "string" ? detail : JSON.stringify(detail)));
 						}

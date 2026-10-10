@@ -15,6 +15,7 @@ fn fixture(token: Option<&str>) -> Arc<Shared> {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,

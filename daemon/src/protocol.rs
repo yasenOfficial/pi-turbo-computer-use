@@ -85,6 +85,15 @@ pub enum Request {
     },
     /// Permanently disable input until this daemon is restarted.
     Stop,
+    /// Clipboard-backed bounded UTF-8 paste, never a character-by-character fallback.
+    PasteText {
+        text: String,
+        target: Option<WaitCondition>,
+        window_title: Option<String>,
+        /// Only for a preceding, explicitly verified GUI focus action in the
+        /// unique active window; not independent machine focus evidence.
+        focus_verified: Option<bool>,
+    },
     #[serde(alias = "type")]
     SetText {
         id: Option<String>,
@@ -321,6 +330,26 @@ pub struct WaitCondition {
 }
 
 #[derive(Debug, Serialize)]
+pub struct PasteResult {
+    /// dispatched=shortcut and a non-TARGETS selection transfer observed;
+    /// uncertain=shortcut attempted but transfer unconfirmed;
+    /// not_pasted=no shortcut attempted. Never proof of field insertion.
+    pub status: &'static str,
+    pub method: &'static str,
+    /// Exactly one preflighted gesture: ctrl_v or shift_insert. No retry.
+    pub shortcut: &'static str,
+    /// semantic=live AT-SPI focused editable field; declared_active_window=
+    /// caller-declared focus with an independently observed exact active title.
+    pub focus_verification: &'static str,
+    pub paste_sent: bool,
+    pub clipboard_restore_status: &'static str,
+    pub clipboard_restored: bool,
+    /// Null after an XTEST transport failure: some presses may have arrived.
+    pub keyboard_events: Option<u64>,
+    pub verified: bool,
+}
+
+#[derive(Debug, Serialize)]
 pub struct Response {
     pub ok: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -331,6 +360,8 @@ pub struct Response {
     pub batch: Option<BatchResult>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub launch: Option<LaunchResult>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub paste: Option<PasteResult>,
     /// Installed visible desktop entries only; never Exec or filesystem paths.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub app_matches: Option<Vec<AppMatch>>,
@@ -382,6 +413,7 @@ impl Response {
             error: None,
             batch: None,
             launch: None,
+            paste: None,
             app_matches: None,
             app_matches_total: None,
             app_matches_truncated: None,

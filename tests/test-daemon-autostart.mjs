@@ -54,7 +54,7 @@ const startup = new DesktopDaemonStartup(process.env.COMPUTER_USE_SOCKET, logEnv
 registerComputerUseTools(pi, workflow, startup);
 const call = (name, params = {}, signal) => tools.get(name).execute("id", params, signal);
 try {
-	assert.equal(tools.size, 21);
+	assert.equal(tools.size, 22);
 	await emit("session_start");
 	assert.equal(launches, 0);
 	assert.equal(commands.size, 0);

@@ -93,6 +93,9 @@ const checkView = (messages, role, expectedPhase) => {
 };
 const planView = phaseView();
 checkView(planView, /phase plan.*Sol/, "execute");
+assert.match(planView[0].sections.computer_use_routing, /finish WITHOUT desktop_model_phase, observation, daemon or images/);
+assert.match(planView[0].sections.computer_use_routing, /Honor explicit GUI intent/);
+assert.match(planView[0].sections.computer_use_routing, /ONLY when handing off GUI execution/);
 assert.equal(planView[0].toolsAdded[1].parameters.required.includes("plan"), true);
 assert.equal(routing.phaseContext({ messages: planView }, ctx).messages[0].sections.computer_use_routing,
 	planView[0].sections.computer_use_routing, "request-local repeated transform is idempotent");
@@ -137,6 +140,7 @@ assert.equal(current, luna10);
 assert.match(labels.at(-1), /изпълнява: Luna/);
 const executeView = phaseView();
 checkView(executeView, /phase execute.*Luna/, "escalate");
+assert.match(executeView[0].sections.computer_use_routing, /native file\/API\/CLI tools for ordinary file steps in a mixed workflow/);
 assert.doesNotMatch(executeView[0].sections.computer_use_routing, /phase plan/);
 assert.equal(executeView[0].toolsAdded[1].parameters.required.includes("verified_state"), true);
 const switchCount = selections.length;

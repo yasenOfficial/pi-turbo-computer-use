@@ -10,8 +10,8 @@ const SECTION = "computer_use_routing";
 const ownPhaseTool = (tool: { name: string; namespace?: unknown }): boolean =>
 	tool.name === "desktop_model_phase" && tool.namespace == null;
 const PHASE_RULES = {
-	plan: "Current routing phase plan; current physical model Sol. Use semantic reads, verified focus of observed windows and desktop_launch_app query metadata; images only under the normal visual-permission gate. Never dispatch or mutate UI beyond verified focus. Produce a concrete execution plan (<=4000 characters) with the actual artifact/code/content when needed, not merely a widget outline. Call desktop_model_phase({phase:'execute',plan}) exactly once, alone, to hand off.",
-	execute: "Current routing phase execute; current physical model Luna. You are ALREADY executing: never request execute again. Follow Sol's concrete plan/artifact; complete the UI workflow and verify it yourself. A missing compact control/name/role or menu is not alone a technical Sol blocker: use bounded fresh inspect/search, targeted wait, verified known shortcut/focus, or authorized smallest visual crop only after a concrete semantic blocker. Do not guess coordinates or try Super variants if unsupported; never replay uncertain input. Escalate one re-observed verified reasoning/technical blocker alone via desktop_model_phase({phase:'escalate',reason,verified_state}) before technical user handoff; security/MFA handoffs remain immediate.",
+	plan: "Current routing phase plan; current physical model Sol. If existing Pi native file/API/CLI tools can finish the requested task, do so on Sol and finish WITHOUT desktop_model_phase, observation, daemon or images. Honor explicit GUI intent; do not substitute CLI/browser APIs for requested UI actions. For needed GUI work, use semantic reads, verified focus of observed windows and desktop_launch_app query metadata; images only under the normal visual-permission gate. Never dispatch or mutate UI beyond verified focus. For GUI execution, produce a concrete bounded plan (<=4000 characters), including the actual artifact/code/content when needed, not merely a widget outline; pass a reference to previously read file data rather than duplicating large or sensitive contents. Call desktop_model_phase({phase:'execute',plan}) exactly once, alone, ONLY when handing off GUI execution.",
+	execute: "Current routing phase execute; current physical model Luna. You are ALREADY executing: never request execute again. Use existing Pi native file/API/CLI tools for ordinary file steps in a mixed workflow; follow Sol's concrete plan/artifact and complete the requested GUI workflow and verify it yourself. A missing compact control/name/role or menu is not alone a technical Sol blocker: use bounded fresh inspect/search, targeted wait, verified known shortcut/focus, or authorized smallest visual crop only after a concrete semantic blocker. Do not guess coordinates or try Super variants if unsupported; never replay uncertain input. Escalate one re-observed verified reasoning/technical blocker alone via desktop_model_phase({phase:'escalate',reason,verified_state}) before technical user handoff; security/MFA handoffs remain immediate.",
 	escalated: "Current routing phase escalated; current physical model Sol. Finish this task on Sol; no execute, no escalate, no Luna bounce. Review the verified blocker and preserved plan, use safe authorized alternatives when possible, otherwise request the user's concrete action. Never replay uncertain input.",
 } as const;
 const PHASE_PARAMETERS = {
@@ -50,7 +50,7 @@ export class ComputerUseRouting {
 	constructor(private readonly pi: ExtensionAPI, private readonly mode: ComputerUseMode,
 		private readonly setRoutingAvailable?: (available: boolean) => void) {
 		pi.registerTool({ name: "desktop_model_phase", label: "Computer use · model handoff", exposure: "model-only",
-			description: "Sol hands a bounded plan (verified window/launcher or discovery step, no guessed selectors) to Luna alone; Luna must escalate a re-observed verified technical blocker for Sol review before technical user handoff. Never batch, escalate from one error, or repeat uncertain input.",
+			description: "For GUI execution only: Sol hands a bounded plan (verified window/launcher or discovery step, no guessed selectors) to Luna alone. Native-only work finishes on Sol without handoff. Luna must escalate a re-observed verified technical blocker for Sol review before technical user handoff. Never batch, escalate from one error, or repeat uncertain input.",
 			parameters: Type.Object({ phase: Type.Union([Type.Literal("execute"), Type.Literal("escalate")]),
 				plan: Type.Optional(Type.String({ minLength: 1, maxLength: 4000 })),
 				reason: Type.Optional(Type.String({ minLength: 1, maxLength: 1000 })),
@@ -286,7 +286,7 @@ export class ComputerUseRouting {
 			const toolsAdded = system.toolsAdded?.map(tool => {
 				if (!ownPhaseTool(tool) || phase === "escalated") return tool;
 				return { ...tool, description: phase === "plan"
-					? "Sol: hand off one concrete bounded plan to Luna; call alone."
+					? "Sol: hand off one concrete bounded GUI plan to Luna only if GUI execution is needed; native-only work finishes here. Call alone."
 					: "Luna: escalate one re-observed verified blocker to Sol; call alone.",
 					parameters: PHASE_PARAMETERS[phase] };
 			}).filter(tool => phase !== "escalated" || !ownPhaseTool(tool));

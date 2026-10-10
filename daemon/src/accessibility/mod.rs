@@ -1359,6 +1359,31 @@ impl Accessibility {
         Ok(true)
     }
 
+    /// Verify the live, focused editable object before a clipboard shortcut.
+    /// Never infer editability from role alone or from a cached focus event.
+    pub async fn verify_paste_target(&self, id: &str) -> Result<()> {
+        let (bus, path) = self.references.get(id).context("stale paste target")?;
+        let accessible =
+            atspi_proxy(&self.connection, bus.as_str(), path.as_str(), ACCESSIBLE).await?;
+        let states: Vec<u32> = timeout(CALL_TIMEOUT, accessible.call("GetState", &())).await??;
+        if !has_state(&states, FOCUSED)
+            || !has_state(&states, EDITABLE)
+            || !has_state(&states, ENABLED)
+            || !has_state(&states, SHOWING)
+        {
+            bail!("paste target is not a focused, enabled, visible editable field");
+        }
+        let interfaces: Vec<String> =
+            timeout(CALL_TIMEOUT, accessible.call("GetInterfaces", &())).await??;
+        if !interfaces
+            .iter()
+            .any(|interface| interface == EDITABLE_TEXT)
+        {
+            bail!("paste target has no editable text interface");
+        }
+        Ok(())
+    }
+
     pub async fn set_text(&self, id: &str, text: &str) -> Result<()> {
         let (bus, path) = self
             .references

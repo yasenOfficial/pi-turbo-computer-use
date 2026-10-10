@@ -6,7 +6,7 @@ const OFF = ["desktop_stop", "desktop_ping", "desktop_metrics"] as const;
 const ON = [
 	...OFF,
 	"desktop_observe", "desktop_changes", "desktop_search_seen", "desktop_inspect",
-	"desktop_batch", "desktop_launch_app", "desktop_set_text", "desktop_focus_window",
+	"desktop_batch", "desktop_launch_app", "desktop_set_text", "desktop_paste_text", "desktop_focus_window",
 	"desktop_keypress", "desktop_scroll", "desktop_click", "desktop_wait",
 	"desktop_request_user", "desktop_visual_permission",
 ] as const;

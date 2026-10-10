@@ -138,7 +138,10 @@ export default function(pi) {
 		[["gpt-sol","execute"],["gpt-sol","execute"],["gpt-luna","escalate"],["gpt-sol",undefined]],
 		"real Pi receives a request-local role and only the eligible handoff tool");
 	assert.ok(phases.slice(0, 2).every(p => /phase plan.*Sol/.test(p.rule) && !p.rule.includes("Current routing phase execute")));
+	assert.match(phases[0].rule, /native file\/API\/CLI tools can finish.*WITHOUT desktop_model_phase/);
+	assert.match(phases[0].rule, /Honor explicit GUI intent/);
 	assert.match(phases[2].rule, /phase execute.*Luna.*ALREADY executing/);
+	assert.match(phases[2].rule, /native file\/API\/CLI tools for ordinary file steps/);
 	assert.match(phases[3].rule, /phase escalated.*Sol.*no execute/);
 	assert.ok(phases.slice(0,4).every(p=>p.hasOtherTools), "unrelated tool declarations survive phase changes");
 	assert.ok(phases[0].required.includes("plan"));

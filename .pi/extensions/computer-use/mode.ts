@@ -1,13 +1,14 @@
 import type { ExtensionAPI, ExtensionContext, BeforeAgentStartEvent, AgentActivityOutcome } from "@earendil-works/pi-coding-agent";
 import { performance } from "node:perf_hooks";
 import { truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
-import { COMPUTER_USE_INSTRUCTIONS } from "./instructions.js";
+import { COMPUTER_USE_INSTRUCTIONS, EXECUTION_STRATEGY } from "./instructions.js";
 import { sendDesktopCompletion } from "./notification.js";
 
 const ENTRY = "computer-use-mode-v1";
 const TIMING_ENTRY = "computer-use-timing-v1";
 const WIDGET = "computer-use-mode";
 const SECTION = "computer_use_mode";
+const STRATEGY_SECTION = "computer_use_execution_strategy";
 
 /** Stateless, terminal-width-aware line; uses Pi's renderer, not a separate TUI. */
 export function formatComputerUseDuration(durationMs: number): string {
@@ -122,6 +123,8 @@ export class ComputerUseMode {
 		this.watch(ctx.signal);
 		this.render(ctx);
 		this.syncTicker();
+		// Keep the ordinary native-tool route visible in every mode, even fresh OFF.
+		event.systemPromptOptions.sections[STRATEGY_SECTION] = EXECUTION_STRATEGY;
 		if (this.enabled) {
 			event.systemPromptOptions.sections[SECTION] = `Computer use mode is ON for this session. The user can submit desktop tasks directly without a slash-command prefix. Answer ordinary questions directly when no desktop interaction is needed. This mode does not authorize unrequested actions, enrollment, schedule changes, credential extraction, or destructive operations. Browser-native saved-login use is authorized only within the task and the saved-login rules below.\n${COMPUTER_USE_INSTRUCTIONS}`;
 		} else {

@@ -14,6 +14,7 @@ pub const CAPABILITIES: &[&str] = &[
     "verified_focus",
     "launch_app",
     "app_discovery",
+    "clipboard_paste",
 ];
 
 #[derive(Serialize)]

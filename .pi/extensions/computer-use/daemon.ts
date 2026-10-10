@@ -91,7 +91,9 @@ export class DesktopDaemonStartup {
 		const pending = this.compatibilityPending;
 		const verify = pending.then((capabilities) => {
 			if (requiredCapability && !capabilities.includes(requiredCapability))
-				throw new Error(`Running daemon lacks ${requiredCapability}; discovery was not sent. Build/reload a capable daemon or use verified semantic UI discovery; do not guess a launcher or retry an uncertain launch.`);
+				throw new Error(requiredCapability === "clipboard_paste"
+					? "Running daemon lacks clipboard_paste; paste was not sent. Build/reload a capable daemon; do not fall back to keyboard typing automatically."
+					: `Running daemon lacks ${requiredCapability}; discovery was not sent. Build/reload a capable daemon or use verified semantic UI discovery; do not guess a launcher or retry an uncertain launch.`);
 		});
 		if (!signal) return verify;
 		return new Promise<void>((resolve, reject) => {

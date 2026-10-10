@@ -135,8 +135,9 @@ export class ComputerUseDebug {
 			if (e.toolName === "desktop_launch_app") row.launchMode = typeof e.args?.query === "string" ? "lookup" : "dispatch";
 			if (e.toolName === "desktop_request_user" && requestReasons.has(e.args?.reason)) row.requestReason = e.args.reason;
 			if (e.toolName === "desktop_model_phase" && handoffPhases.has(e.args?.phase)) row.handoffPhase = e.args.phase;
-			if (["desktop_set_text", "desktop_type"].includes(e.toolName) && typeof e.args?.text === "string")
+			if (["desktop_set_text", "desktop_type", "desktop_paste_text"].includes(e.toolName) && typeof e.args?.text === "string")
 				row.inputTextBytes = Buffer.byteLength(e.args.text);
+			if (e.toolName === "desktop_paste_text") row.focusDeclared = e.args?.focus_verified === true;
 			if (e.toolName === "desktop_batch" && Array.isArray(e.args?.actions)) {
 				row.batchActions = Math.min(e.args.actions.length, 24);
 				row.inputTextBytes = e.args.actions.slice(0, 24).reduce((sum: number, action: any) =>
@@ -166,6 +167,17 @@ export class ComputerUseDebug {
 					if (Number.isSafeInteger(response?.app_matches_total) && response.app_matches_total >= 0)
 						span.row.appMatchesTotal = response.app_matches_total;
 					if (typeof response?.app_matches_truncated === "boolean") span.row.appMatchesTruncated = response.app_matches_truncated;
+				}
+				if (e.toolName === "desktop_paste_text") {
+					const paste = e.result?.details?.response?.paste;
+					if (["dispatched", "uncertain", "not_pasted"].includes(paste?.status)) span.row.pasteStatus = paste.status;
+					if (["ctrl_v", "shift_insert"].includes(paste?.shortcut)) span.row.pasteShortcut = paste.shortcut;
+					if (["restored", "unchanged", "skipped_new_owner", "unavailable"].includes(paste?.clipboard_restore_status))
+						span.row.clipboardRestoreStatus = paste.clipboard_restore_status;
+					if (typeof paste?.paste_sent === "boolean") span.row.pasteSent = paste.paste_sent;
+					if (typeof paste?.clipboard_restored === "boolean") span.row.clipboardRestored = paste.clipboard_restored;
+					if (paste?.keyboard_events === null || (Number.isSafeInteger(paste?.keyboard_events) && [0, 4].includes(paste.keyboard_events)))
+						span.row.pasteKeyboardEvents = paste.keyboard_events;
 				}
 				if (e.toolName === "desktop_batch") {
 					const result = e.result?.structuredContent ?? e.result?.details?.response;

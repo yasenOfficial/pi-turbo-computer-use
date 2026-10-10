@@ -45,7 +45,7 @@ const commands: CommandDefinition[] = [
 	},
 	{
 		name: "desktop_launch_app", label: "Launch installed app",
-		description: "Query installed app metadata by product name (query; no dispatch), or launch by verified exact desktop ID / localized name. Select the intended app_id from bounded matches; never guess a versioned ID. accepted is not window readiness: wait/observe. No commands, paths or arguments.",
+		description: "For authorized GUI presentation, query installed app metadata by product name (query; no dispatch), or launch by verified exact desktop ID / localized name. Select the intended app_id from bounded matches; never guess a versioned ID. accepted is not window readiness: wait/observe. No commands, paths or arguments.",
 		parameters: Type.Union([
 			Type.Object({ query: Type.String({ minLength: 1, maxLength: 240, pattern: "^(?=.*\\S)[^\\x00-\\x1F\\x7F-\\x9F]+$", description: "Find up to 20 installed app candidates without launching; select an exact returned app_id before dispatch" }) }, { additionalProperties: false }),
 			Type.Object({ app_id: Type.String({ minLength: 9, maxLength: 240, pattern: "^[A-Za-z0-9_-][A-Za-z0-9._-]*\\.desktop$" }) }, { additionalProperties: false }),
@@ -59,7 +59,7 @@ const commands: CommandDefinition[] = [
 	},
 	{
 		name: "desktop_observe", label: "Observe desktop",
-		description: "Read X11 windows and accessible UI. A uniquely matched active frame shows its linked descendants plus a proved showing Cinnamon popup; otherwise output is a short overview (up to 24 top nodes), not proof other nodes are inaccessible. Counts show omissions; use desktop_search_seen to find omitted controls and desktop_inspect for a selected node. Daemon history remains complete. Screenshot off by default.",
+		description: "Read X11 windows and accessible UI only when GUI interaction is needed or explicitly requested; use Pi read/write/edit/bash for files/code/commands. A uniquely matched active frame shows its linked descendants plus a proved showing Cinnamon popup; otherwise output is a short overview (up to 24 top nodes), not proof other nodes are inaccessible. Counts show omissions; use desktop_search_seen to find omitted controls and desktop_inspect for a selected node. Daemon history remains complete. Screenshot off by default.",
 		parameters: Type.Object({
 			since: Type.Optional(Type.Integer({ minimum: 0, description: "Return a delta from this generation" })),
 			screenshot: Type.Optional(Type.Boolean({ default: false, description: "Capture a screenshot (off by default)" })),
@@ -123,13 +123,27 @@ const commands: CommandDefinition[] = [
 	},
 	{
 		name: "desktop_set_text", label: "Set text",
-		description: "Set text on a focused control or semantic node id.",
+		description: "Replace the complete value of a revalidated editable semantic node with id, using native AT-SPI. Without id this is legacy SHORT layout-dependent typing. Use Pi write/edit for ordinary files/code, desktop_paste_text for GUI insertion/long Unicode; never retry uncertain text input via another method.",
 		parameters: Type.Object({ id, text: Type.String() }),
 	},
 	{
 		name: "desktop_type", label: "Type text",
-		description: "Set text semantically when id is supplied; otherwise type into the focused control using native keyboard input.",
+		description: "Set text semantically when id is supplied; otherwise type SHORT layout-dependent text into the focused control using native keyboard input. For long or Unicode text explicitly choose desktop_paste_text; never automatically retry a failed setter/typing operation as paste.",
 		parameters: Type.Object({ id, text: Type.String() }),
+	},
+	{
+		name: "desktop_paste_text", label: "Paste text into verified field",
+		description: "Paste up to 65536 UTF-8 bytes via the native clipboard into an already focused, visible, enabled, non-password editable field. Use a fresh exact semantic target (id/name/role) when available; a supplied target never falls back to declared focus. Without target, supply the exact active window_title; semantic focus is tried first. Only if no known focused text field exists, after explicitly focusing the intended GUI field, set focus_verified:true to allow declared active-window focus (not independent proof). No implicit caret/selection, Ctrl+A or submit. The daemon preselects Ctrl+V only when the active layout maps Latin v, otherwise Shift+Insert; apps may not support either, and it never switches layout or retries another shortcut. Clipboard is restored when possible; dispatched is not proof of field contents. On uncertain outcome do not retry automatically; observe/read back. Unsupported Wayland fails before input. For short layout-dependent legacy typing only, use desktop_type explicitly; it is not an automatic fallback.",
+		parameters: Type.Object({
+			text: Type.String({ maxLength: 65_536 }),
+			target: Type.Optional(Type.Object({
+				id: Type.Optional(Type.String({ maxLength: 240 })),
+				name: Type.Optional(Type.String({ maxLength: 240 })),
+				role: Type.Optional(Type.String({ maxLength: 240 })),
+			}, { minProperties: 1, additionalProperties: false })),
+			window_title: Type.Optional(Type.String({ minLength: 1, maxLength: 240 })),
+			focus_verified: Type.Optional(Type.Boolean()),
+		}, { additionalProperties: false }),
 	},
 	{
 		name: "desktop_keypress", label: "Press key",
@@ -203,12 +217,30 @@ const MAX_TEXT = 20_000;
 const MAX_OBSERVATION_TEXT = 6_000;
 const MAX_FIELD = 240;
 
+function pasteParameters(params: unknown): void {
+	if (!params || typeof params !== "object" || Array.isArray(params)) throw new Error("Invalid paste parameters; no desktop action was sent");
+	const fields = params as Record<string, unknown>;
+	if (Object.keys(fields).some(key => !["text", "target", "window_title", "focus_verified"].includes(key)) ||
+		typeof fields.text !== "string" || Buffer.byteLength(fields.text, "utf8") > 65_536 ||
+		(fields.focus_verified !== undefined && typeof fields.focus_verified !== "boolean") ||
+		(fields.window_title !== undefined && (typeof fields.window_title !== "string" || !fields.window_title || Buffer.byteLength(fields.window_title, "utf8") > 240)))
+		throw new Error("Invalid paste text, title or UTF-8 byte length; no desktop action was sent");
+	if (fields.target !== undefined) {
+		const target = fields.target;
+		if (!target || typeof target !== "object" || Array.isArray(target) || !Object.keys(target).length ||
+			Object.entries(target).some(([key, value]) => !["id", "name", "role"].includes(key) || typeof value !== "string" || Buffer.byteLength(value, "utf8") > 240))
+			throw new Error("Invalid paste target selector (maximum 240 UTF-8 bytes per field); no desktop action was sent");
+	} else if (fields.window_title === undefined) {
+		throw new Error("Paste without a target requires an exact active window_title; no desktop action was sent");
+	}
+}
+
 function daemonCommand(toolName: string): string {
 	const commands: Record<string, string> = { desktop_set_text: "set_text", desktop_type: "type", desktop_batch: "batch", desktop_dirty_regions: "dirty_regions" };
 	const command = commands[toolName] ?? toolName.replace(/^desktop_/, "");
 	const supported = new Set([
 		"observe", "changes", "click", "double_click", "drag", "focus_window", "inspect", "inspect_visual",
-		"set_text", "type", "keypress", "scroll", "screenshot", "wait", "stop", "ping", "batch", "dirty_regions", "search_seen", "metrics", "launch_app",
+		"set_text", "type", "paste_text", "keypress", "scroll", "screenshot", "wait", "stop", "ping", "batch", "dirty_regions", "search_seen", "metrics", "launch_app",
 	]);
 	if (!supported.has(command)) throw new Error(`Unsupported desktop command: ${toolName}`);
 	return command;
@@ -569,6 +601,24 @@ function responseText(response: Record<string, unknown>, budget = MAX_TEXT): str
 }
 
 function modelResponse(response: Record<string, unknown>, command: string, payload: Record<string, JsonValue>): Record<string, unknown> {
+	if (command === "desktop_paste_text") {
+		const raw = response.paste;
+		const paste = raw && typeof raw === "object" && !Array.isArray(raw) ? raw as Record<string, unknown> : {};
+		const allowed = (value: unknown, choices: string[]) => typeof value === "string" && choices.includes(value) ? value : undefined;
+		return { ok: response.ok === true,
+			paste: {
+				status: allowed(paste.status, ["dispatched", "uncertain", "not_pasted"]),
+				method: allowed(paste.method, ["clipboard"]),
+				shortcut: allowed(paste.shortcut, ["ctrl_v", "shift_insert"]),
+				paste_sent: typeof paste.paste_sent === "boolean" ? paste.paste_sent : undefined,
+				clipboard_restore_status: allowed(paste.clipboard_restore_status, ["restored", "unchanged", "skipped_new_owner", "unavailable"]),
+				clipboard_restored: typeof paste.clipboard_restored === "boolean" ? paste.clipboard_restored : undefined,
+				keyboard_events: paste.keyboard_events === null || (Number.isSafeInteger(paste.keyboard_events) && (paste.keyboard_events === 0 || paste.keyboard_events === 4)) ? paste.keyboard_events : undefined,
+				verified: paste.verified === false ? false : undefined,
+				focus_verification: allowed(paste.focus_verification, ["semantic", "declared_active_window"]),
+			},
+			...(response.ok === false ? { error: "Paste not confirmed; do not retry automatically. Observe the intended field and use the reported restoration status before further input." } : {}) };
+	}
 	if (command === "desktop_launch_app") {
 		return { ok: response.ok,
 			...(typeof response.launch_status === "string" ? { launch_status: response.launch_status } : {}),
@@ -677,7 +727,7 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 			label: command.label,
 			description: command.description,
 			...(command.name === "desktop_observe" ? { promptGuidelines: [
-				"Follow the computer-use mode rules: registered desktop_* tools only, AT-SPI/windows/GIO first, revalidate historical IDs and search compact omissions. Batch verified actions with wait/assert checks; prefer semantic changes over full observations. Do not recapture information already available semantically. Every image needs exact desktop_visual_permission for an explicit request or verified semantic blocker. Minimize images and model round trips; never bypass OFF, Stop or uncertain-input rules.",
+				"Prefer existing Pi read/write/edit/bash and supported APIs for files/code/builds; GUI only when needed or explicitly requested. Mix native file reads with verified GUI text insertion, without implicit submit. For GUI observation/input/capture/clipboard follow the mode rules: registered desktop_* tools only, AT-SPI/windows/GIO first, revalidate historical IDs and search compact omissions. Batch verified actions with wait/assert checks; prefer semantic changes over full observations. Do not recapture information already available semantically. Every image needs exact desktop_visual_permission for an explicit request or verified semantic blocker. Minimize images and model round trips; never bypass OFF, Stop or uncertain-input rules.",
 			] } : {}),
 			parameters: command.parameters,
 			annotations: {
@@ -686,11 +736,13 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 				openWorldHint: command.readOnly !== true,
 			},
 			async execute(_toolCallId, params, signal) {
+				if (command.name === "desktop_paste_text") pasteParameters(params);
 				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();
 				if (command.name === "desktop_stop") startup?.markStopped();
 				else if (command.name === "desktop_ping" || command.name === "desktop_metrics") await startup?.ensure(signal);
 				else await startup?.ensureCompatible(signal, command.name === "desktop_launch_app" &&
-					typeof (params as Record<string, unknown>).query === "string" ? "app_discovery" : undefined);
+					typeof (params as Record<string, unknown>).query === "string" ? "app_discovery" :
+					command.name === "desktop_paste_text" ? "clipboard_paste" : undefined);
 				// A lease begin must never race ahead of cold-start readiness. Check
 				// again after it: Stop may arrive while a lease begin is pending.
 				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();
@@ -705,6 +757,15 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 					// commands. Only these anchored native Stop rejections are sticky;
 					// connection/timeout errors and arbitrary UI text are not evidence.
 					if (error instanceof Error && /^(?:input stopped(?:;|$)|emergency stop active(?:$|[.;]))/.test(error.message)) startup?.markStopped();
+					if (command.name === "desktop_paste_text") {
+						// Never surface daemon/UI diagnostics that might contain field or clipboard data.
+						const message = error instanceof Error ? error.message : "";
+						throw new Error(/^(?:input stopped(?:;|$)|emergency stop active(?:$|[.;]))/.test(message)
+							? "Desktop input stopped; paste was not sent. Do not retry automatically."
+							: message.includes("Request was not sent.")
+								? "Paste request was not sent; check daemon availability before trying again."
+								: "Paste outcome may be uncertain; do not retry automatically. Observe the field and use any reported restoration status before further input.");
+					}
 					throw error;
 				}
 				// launch_app and batch preserve failed responses rather than throwing.

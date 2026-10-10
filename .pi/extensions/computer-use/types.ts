@@ -7,6 +7,28 @@ export interface DaemonRequest {
 	[key: string]: JsonValue | undefined;
 }
 
+/** Paste is an explicitly selected native action, never a fallback after uncertain input. */
+export interface PasteTextRequest extends DaemonRequest {
+	cmd: "paste_text";
+	text: string;
+	target?: { id?: string; name?: string; role?: string };
+	window_title?: string;
+	focus_verified?: boolean;
+}
+
+/** Native paste metadata is not independent verification of the destination value. */
+export interface PasteResponse {
+	status: "dispatched" | "uncertain" | "not_pasted";
+	method: "clipboard";
+	shortcut: "ctrl_v" | "shift_insert";
+	paste_sent: boolean;
+	clipboard_restore_status: "restored" | "unchanged" | "skipped_new_owner" | "unavailable";
+	clipboard_restored: boolean;
+	keyboard_events: 0 | 4 | null;
+	verified: false;
+	focus_verification: "semantic" | "declared_active_window";
+}
+
 /** Search results are metadata hints, never durable/actionable node references. */
 export interface SeenHit {
 	id: string;

@@ -1,6 +1,7 @@
 mod accessibility;
 mod apps;
 mod capture;
+mod clipboard;
 mod config;
 mod feedback;
 mod input;
@@ -188,6 +189,7 @@ struct Daemon {
     last_observed: Option<u64>,
     input: Option<input::X11Input>,
     capture: Option<capture::X11Capture>,
+    clipboard: Option<std::sync::Arc<clipboard::Clipboard>>,
     visual_cache: visual::VisualCache,
     screen_dirty: Option<capture::damage::ScreenDirtyBackend>,
     screen_tile_size: u16,
@@ -245,6 +247,7 @@ async fn main() -> Result<()> {
         last_observed: None,
         input: None,
         capture: None,
+        clipboard: None,
         visual_cache: visual::VisualCache::new(config.tile_size),
         screen_dirty: None,
         screen_tile_size: config.tile_size,
@@ -1048,7 +1051,102 @@ fn matches_condition(nodes: &[Node], condition: &WaitCondition) -> bool {
     })
 }
 
+// A caller's focus declaration is only a fallback for *missing* semantic
+// field focus. A fresh, known focused control (even alongside a stale focused
+// text marker) contradicts it; an active window title cannot override that.
+fn reject_known_noneditable_paste_focus(nodes: &[Node]) -> Result<()> {
+    for node in nodes.iter().filter(|n| n.focused == Some(true)) {
+        if node.role == "password text" {
+            bail!("focused password field cannot receive clipboard paste");
+        }
+        if !matches!(
+            node.role.as_str(),
+            "entry" | "text" // validated via live AT-SPI GetState below
+                | "application" | "frame" | "window" | "dialog" | "panel"
+                | "grouping" | "scroll pane" | "root pane" | "layered pane"
+                | "viewport" | "document frame" | "document web"
+                | "internal frame" | "embedded" // structural ancestors only
+        ) {
+            bail!("known focused noneditable control; refusing clipboard paste");
+        }
+    }
+    Ok(())
+}
+
+enum PasteFocus {
+    Semantic(String),
+    DeclaredActiveWindow,
+}
+impl PasteFocus {
+    fn label(&self) -> &'static str {
+        match self {
+            Self::Semantic(_) => "semantic",
+            Self::DeclaredActiveWindow => "declared_active_window",
+        }
+    }
+}
+
 impl Daemon {
+    /// Always refresh the active X11 window and, when available, the semantic
+    /// tree. A declared focus is NOT independent verification of the field.
+    async fn verify_paste_focus(
+        &mut self,
+        target: Option<&WaitCondition>,
+        title: Option<&str>,
+        declared: bool,
+    ) -> Result<PasteFocus> {
+        self.ensure_input_enabled()?;
+        if let Some(backend) = &self.accessibility {
+            backend.invalidate();
+        }
+        let windows = self.refresh_observation().await?;
+        if let Some(title) = title {
+            if windows.iter().filter(|w| w.title == title).count() != 1
+                || !windows.iter().any(|w| w.active && w.title == title)
+            {
+                bail!("paste window title must uniquely match the active window");
+            }
+        }
+        let nodes = &self.cache.current().nodes;
+        // A focus declaration must not overrule a known noneditable leaf,
+        // including buttons, menus, links, and password fields. This also
+        // catches conflicting focused controls alongside a focused text node.
+        reject_known_noneditable_paste_focus(nodes)?;
+        let id = if let Some(target) = target {
+            Some(resolve_target(nodes, target)?)
+        } else {
+            let mut focused = nodes
+                .iter()
+                .filter(|n| n.focused == Some(true) && matches!(n.role.as_str(), "entry" | "text"));
+            let id = focused.next().map(|n| n.id.clone());
+            if focused.next().is_some() {
+                bail!("ambiguous focused paste target");
+            }
+            id
+        };
+        if let Some(id) = id {
+            let node = nodes
+                .iter()
+                .find(|n| n.id == id)
+                .context("paste target vanished")?;
+            if !matches!(node.role.as_str(), "entry" | "text") {
+                bail!("paste target must be a non-password text field");
+            }
+            let backend = self
+                .accessibility
+                .as_ref()
+                .context("paste target lacks AT-SPI backend")?;
+            // Known semantic field, including a caller-supplied target, must
+            // pass direct live GetState/GetInterfaces. Never fall back on error.
+            backend.verify_paste_target(&id).await?;
+            return Ok(PasteFocus::Semantic(id));
+        }
+        if target.is_some() || !declared || title.is_none() {
+            bail!("no focused editable AT-SPI field; declared focus requires focus_verified:true and an exact active window_title");
+        }
+        Ok(PasteFocus::DeclaredActiveWindow)
+    }
+
     async fn activity(&self) -> Option<Activity> {
         if self.safety.stopped() {
             return None;
@@ -1177,6 +1275,20 @@ impl Daemon {
     }
 
     async fn handle(&mut self, request: Request) -> Result<Response> {
+        if matches!(&request, Request::PasteText { .. }) {
+            // Gate before activity, AT-SPI, X11 focus, clipboard ownership or
+            // input. Xwayland access does not make a native Wayland clipboard
+            // transaction safe; explicit X11 sessions are supported.
+            let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+            let wayland_display = std::env::var("WAYLAND_DISPLAY").ok();
+            if std::env::var_os("XDG_SESSION_TYPE").is_some() && session_type.is_none()
+                || std::env::var_os("WAYLAND_DISPLAY").is_some() && wayland_display.is_none()
+            {
+                bail!("unsupported desktop session for clipboard paste (X11 only)");
+            }
+            clipboard::validate_session(session_type.as_deref(), wayland_display.as_deref())
+                .map_err(|error| anyhow::anyhow!(error))?;
+        }
         // Extension double_click is a physical two-click gesture, not two
         // semantic DoAction calls (which often don't constitute a double click).
         let request = match request {
@@ -1197,6 +1309,7 @@ impl Daemon {
                 | Request::FocusWindow { .. }
                 | Request::LaunchApp(..)
                 | Request::SetText { .. }
+                | Request::PasteText { .. }
                 | Request::Keypress { .. }
                 | Request::Scroll { .. }
         ) {
@@ -1516,6 +1629,142 @@ impl Daemon {
                 external(self.input()?.focus_window(&title))?;
                 Ok(self.action_result())
             }
+            Request::PasteText {
+                text,
+                target,
+                window_title,
+                focus_verified,
+            } => {
+                self.ensure_input_enabled()?;
+                if text.len() > 65_536 {
+                    bail!("paste text must be <= 65536 UTF-8 bytes");
+                }
+                if window_title
+                    .as_ref()
+                    .is_some_and(|t| t.is_empty() || t.len() > 240)
+                {
+                    bail!("window_title must be 1..=240 bytes");
+                }
+                if target.is_none() && window_title.is_none() {
+                    bail!("paste without a target requires an exact active window_title");
+                }
+                if let Some(target) = &target {
+                    for field in [&target.id, &target.name, &target.role] {
+                        if field.as_ref().is_some_and(|s| s.len() > 240) {
+                            bail!("paste target field exceeds 240 bytes");
+                        }
+                    }
+                }
+                let proof = self
+                    .verify_paste_focus(
+                        target.as_ref(),
+                        window_title.as_deref(),
+                        focus_verified.unwrap_or(false),
+                    )
+                    .await?;
+                self.ensure_input_enabled()?;
+                let shortcut = external(self.input()?.preflight_paste())?;
+                let clipboard = self
+                    .clipboard
+                    .get_or_insert_with(|| std::sync::Arc::new(clipboard::Clipboard::new()))
+                    .clone();
+                let copy = clipboard.clone();
+                let safety = self.safety.clone();
+                tokio::task::spawn_blocking(move || copy.begin(text, safety))
+                    .await
+                    .context("clipboard worker failed")?
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                // Re-evaluate semantic focus and the unique active title after
+                // snapshot, immediately before the single shortcut. Never let
+                // an invalid semantic target fall back to a declaration.
+                let still_focused = self
+                    .verify_paste_focus(
+                        target.as_ref(),
+                        window_title.as_deref(),
+                        focus_verified.unwrap_or(false),
+                    )
+                    .await;
+                let unchanged = matches!((&proof, &still_focused),
+                    (PasteFocus::Semantic(a), Ok(PasteFocus::Semantic(b))) if a == b)
+                    || matches!(
+                        (&proof, &still_focused),
+                        (
+                            PasteFocus::DeclaredActiveWindow,
+                            Ok(PasteFocus::DeclaredActiveWindow)
+                        )
+                    );
+                let dispatch = if !unchanged || self.safety.stopped() {
+                    Err("paste focus changed or input stopped before shortcut")
+                } else {
+                    clipboard.mark_dispatch()
+                };
+                if let Err(reason) = dispatch {
+                    let copy = clipboard.clone();
+                    let restore = tokio::task::spawn_blocking(move || copy.cancel())
+                        .await
+                        .unwrap_or("unavailable");
+                    return Ok(Response {
+                        ok: false,
+                        error: Some(reason.into()),
+                        paste: Some(protocol::PasteResult {
+                            status: "not_pasted",
+                            method: "clipboard",
+                            shortcut: shortcut.label(),
+                            focus_verification: proof.label(),
+                            paste_sent: false,
+                            clipboard_restored: restore == "restored",
+                            clipboard_restore_status: restore,
+                            keyboard_events: Some(0),
+                            verified: false,
+                        }),
+                        ..Response::empty()
+                    });
+                }
+                // No automatic retry on any error after this point: an XTEST
+                // transport error cannot prove that the destination did not paste.
+                let sent = self
+                    .input
+                    .as_ref()
+                    .context("paste input unavailable")
+                    .and_then(|input| external(input.paste(shortcut)));
+                let copy = clipboard.clone();
+                let safety = self.safety.clone();
+                let (restore, received) = tokio::task::spawn_blocking(move || copy.finish(safety))
+                    .await
+                    .ok()
+                    .and_then(Result::ok)
+                    .unwrap_or(("unavailable", false));
+                let status = if sent.is_ok() && received {
+                    "dispatched"
+                } else {
+                    "uncertain"
+                };
+                self.invalidate();
+                Ok(Response {
+                    ok: sent.is_ok() && received && restore != "unavailable",
+                    error: if sent.is_err() {
+                        Some("paste shortcut outcome uncertain; do not retry automatically".into())
+                    } else if !received {
+                        Some("clipboard transfer not confirmed; do not retry automatically".into())
+                    } else if restore == "unavailable" {
+                        Some("clipboard restoration unavailable; paste may have occurred; do not retry automatically".into())
+                    } else {
+                        None
+                    },
+                    paste: Some(protocol::PasteResult {
+                        status,
+                        method: "clipboard",
+                        shortcut: shortcut.label(),
+                        focus_verification: proof.label(),
+                        paste_sent: true,
+                        clipboard_restored: restore == "restored",
+                        clipboard_restore_status: restore,
+                        keyboard_events: sent.is_ok().then_some(4),
+                        verified: false,
+                    }),
+                    ..Response::empty()
+                })
+            }
             Request::SetText { id, text } => {
                 self.ensure_input_enabled()?;
                 if let Some(id) = id {
@@ -1578,8 +1827,8 @@ mod upgrade_tests;
 mod tests {
     use super::{
         batch_delta, batch_limit, batch_step, clipped_bounds, compare_assert,
-        mark_stopped_response, mark_stopped_step, matches_condition, resolve_target, run_batch,
-        validate_assert, Daemon,
+        mark_stopped_response, mark_stopped_step, matches_condition,
+        reject_known_noneditable_paste_focus, resolve_target, run_batch, validate_assert, Daemon,
     };
     use crate::{
         protocol::{AssertFields, BatchAction, BatchResult, BatchStep, Response, WaitCondition},
@@ -1822,6 +2071,7 @@ mod tests {
             last_observed: None,
             input: None, // Never construct XTEST or exercise a model input tool.
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -1983,6 +2233,68 @@ mod tests {
         )
         .await?;
         Ok(())
+    }
+
+    #[test]
+    fn declared_paste_focus_rejects_known_noneditable_or_conflicting_controls() {
+        let node = |id: &str, role: &str, focused: Option<bool>| Node {
+            id: id.into(),
+            parent: None,
+            children: vec![],
+            name: String::new(),
+            role: role.into(),
+            bounds: None,
+            value: None,
+            value_read_failed: false,
+            enabled: None,
+            visible: None,
+            focused,
+            actions: None,
+        };
+        // Structural ancestors alone do not prove or refute a focused web
+        // field; a caller declaration may proceed to the active-window gate.
+        let structural = vec![
+            node("app", "application", Some(true)),
+            node("frame", "frame", Some(true)),
+            node("doc", "document web", Some(true)),
+        ];
+        assert!(reject_known_noneditable_paste_focus(&structural).is_ok());
+        assert!(reject_known_noneditable_paste_focus(&[]).is_ok());
+        for role in [
+            "push button",
+            "menu item",
+            "link",
+            "tree item",
+            "combo box",
+            "table",
+            "slider",
+            "check box",
+            "unknown leaf",
+            "password text",
+        ] {
+            let focused = node("leaf", role, Some(true));
+            assert!(
+                reject_known_noneditable_paste_focus(&[focused.clone()]).is_err(),
+                "{role}"
+            );
+            assert!(
+                reject_known_noneditable_paste_focus(&[
+                    node("entry", "entry", Some(true)),
+                    focused
+                ])
+                .is_err(),
+                "conflicting {role}"
+            );
+            assert!(
+                reject_known_noneditable_paste_focus(&[node("background", role, Some(false))])
+                    .is_ok()
+            );
+        }
+        assert!(reject_known_noneditable_paste_focus(&[
+            node("entry", "entry", Some(true)),
+            node("frame", "frame", Some(true))
+        ])
+        .is_ok());
     }
 
     #[test]
@@ -2305,6 +2617,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -2406,6 +2719,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -2460,6 +2774,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -2522,6 +2837,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -2554,6 +2870,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -2638,6 +2955,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,
@@ -2735,6 +3053,7 @@ mod tests {
             last_observed: None,
             input: None,
             capture: None,
+            clipboard: None,
             visual_cache: crate::visual::VisualCache::default(),
             screen_dirty: None,
             screen_tile_size: 32,

@@ -22,7 +22,7 @@ const { COMPUTER_USE_INSTRUCTIONS, SAVED_LOGIN_POLICY } = await jiti.import(path
 
 const all = ["read", "bash", "another_extension", "desktop_drag", "desktop_double_click", "desktop_dirty_regions",
 	"desktop_type", "desktop_screenshot", "desktop_inspect_visual", "desktop_observe", "desktop_changes",
-	"desktop_search_seen", "desktop_inspect", "desktop_batch", "desktop_launch_app", "desktop_set_text",
+	"desktop_search_seen", "desktop_inspect", "desktop_batch", "desktop_launch_app", "desktop_set_text", "desktop_paste_text",
 	"desktop_focus_window", "desktop_keypress", "desktop_scroll", "desktop_click", "desktop_wait",
 	"desktop_request_user", "desktop_visual_permission", "desktop_model_phase", "desktop_stop", "desktop_ping", "desktop_metrics"];
 let active = [...all];
@@ -42,11 +42,12 @@ loadout.allowCapture("desktop_screenshot");
 assert.deepEqual(desktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"], "grant callback cannot activate a capture while OFF");
 loadout.sync(true);
 for (const name of ["desktop_observe", "desktop_changes", "desktop_search_seen", "desktop_inspect", "desktop_batch",
-	"desktop_launch_app", "desktop_set_text", "desktop_focus_window", "desktop_keypress", "desktop_scroll",
+	"desktop_launch_app", "desktop_set_text", "desktop_paste_text", "desktop_focus_window", "desktop_keypress", "desktop_scroll",
 	"desktop_click", "desktop_wait", "desktop_request_user", "desktop_visual_permission"]) assert.ok(desktop().includes(name), name);
 for (const name of ["desktop_double_click", "desktop_drag", "desktop_type", "desktop_dirty_regions",
 	"desktop_inspect_visual", "desktop_screenshot", "desktop_model_phase"]) assert.ok(!desktop().includes(name), name);
 assert.deepEqual(nonDesktop(), ["read", "bash", "another_extension"]);
+assert.equal(desktop().length, 18);
 const onChanges = changes;
 loadout.sync(true);
 assert.equal(changes, onChanges);
@@ -62,6 +63,7 @@ assert.ok(!desktop().includes("desktop_inspect_visual"));
 loadout.clearCapture();
 loadout.sync(true, true);
 assert.ok(desktop().includes("desktop_model_phase"), "phase tool is exposed only in hybrid mode");
+assert.equal(desktop().length, 19);
 loadout.allowCapture("desktop_screenshot");
 const captureWithPhase = changes;
 loadout.setRoutingAvailable(false);
