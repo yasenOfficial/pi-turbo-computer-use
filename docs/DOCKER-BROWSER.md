@@ -81,6 +81,8 @@ If an older extension reported **“Shared browser control is unavailable”** i
 
 If a viewer link says **failed to connect**, run `/browser use` again and use the link it reports: removal/recreation can allocate a different port. A noVNC HTML page alone does not establish that its VNC backend is alive; the command now checks a real read-only RFB handshake (no framebuffer updates or GUI input) before reporting readiness. There is no background automatic input retry or silent host fallback. Fixed child-role/exit-status diagnostics help distinguish daemon, Firefox, VNC and proxy failures without logging page titles/URLs or profile data. The reported `32811` incident was an exited container with a refused TCP port; its original child-exit cause could not be recovered from the old suppressed diagnostics.
 
+Docker may remove an old image object while a container created from it still runs. This does not alone make that container unsafe: inspection/owned cleanup uses its exact privately pinned container/image IDs, schema, UID, privileges, mounts, network and profile-volume checks. An altered container remains blocked. New containers and migration importers still require an inspectable trusted image. The image-GC false-refusal regression is covered for both old and current containers; the original running user's container metadata was revalidated without stopping it or reading profile contents.
+
 A killed build can leave a lifecycle lock; a crashed Pi process can leave a control claim. Such uncertain claims are not stolen automatically. Verify the prior owner/operation ended before tightly scoped manual recovery. An uncertain Docker create ID is not adopted by name. No broad prune or unrelated container removal is used.
 
 ## Verification

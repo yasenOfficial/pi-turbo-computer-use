@@ -153,7 +153,7 @@ function validState(s, key) {
     (s.schema === SCHEMA && !/^pi-computer-profile-[0-9a-f]{64}$/.test(s.profileVolume))) deny();
 }
 function imageSafe(image, uid, legacy = false) {
-  if (!IMAGE_ID.test(image.Id) || image.Config?.Labels?.[OWNER] !== 'v1' ||
+  if (!image || !IMAGE_ID.test(image.Id) || image.Config?.Labels?.[OWNER] !== 'v1' ||
     image.Config?.Labels?.[`${OWNER}.schema`] !== (legacy ? undefined : SCHEMA) ||
     image.Config?.User !== `${uid}:${uid}` || image.Config?.Entrypoint?.length !== 1 ||
     image.Config.Entrypoint[0] !== '/usr/local/bin/browser-entrypoint') deny();
@@ -167,7 +167,8 @@ function containerSafe(info, s, ipc, uid) {
     info.Config?.Image !== s.imageId || info.Config?.Labels?.[OWNER] !== 'v1' ||
     info.Config?.Labels?.['org.pi-computer.browser.id'] !== s.id ||
     info.Config?.Labels?.[`${OWNER}.schema`] !== (persistent ? SCHEMA : undefined) ||
-    info.Config?.User !== `${uid}:${uid}` || info.Config?.Entrypoint?.[0] !== '/usr/local/bin/browser-entrypoint' ||
+    info.Config?.User !== `${uid}:${uid}` || info.Config?.Entrypoint?.length !== 1 ||
+    info.Config.Entrypoint[0] !== '/usr/local/bin/browser-entrypoint' ||
     info.HostConfig?.Privileged !== false || info.HostConfig?.ReadonlyRootfs !== true ||
     info.HostConfig?.NetworkMode !== s.network || info.HostConfig?.PidMode !== '' ||
     info.HostConfig?.IpcMode !== 'private' || info.HostConfig?.PidsLimit !== 512 ||
@@ -433,8 +434,12 @@ export class BrowserDockerRuntime {
         (socket.mode & 0o7777) !== 0o600)) deny();
     await this.#network(s);
     const image = await this.#inspect(['image', 'inspect', '--format', '{{json .}}', s.imageId]);
+    // Docker can garbage-collect an image object while its pinned container
+    // still exists. Metadata-only inspection/owned cleanup remains possible
+    // after the container's exact image ID, schema, privileges, mounts and
+    // profile volume are verified below. Creating a new container or importer
+    // still requires an inspectable trusted v2 image in start()/migration().
     if (image) imageSafe(image, this.uid, s.schema !== SCHEMA);
-    else if (s.schema === SCHEMA) deny(); // v2 image/helper must remain inspectable
     const info = await this.#inspect(['container', 'inspect', '--format', '{{json .}}', s.containerId]);
     if (!info) return null;
     // An old image may have been garbage-collected while its container runs.

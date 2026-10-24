@@ -433,7 +433,7 @@ test('failed transfer invokes fixed Firefox thaw and quarantines partial volume'
   await assert.rejects(() => reload().migrateLegacyProfile(), /already attempted/);
   assert.ok(!mock.calls.some(a => a[0] === 'stop'));
 }));
-test('GC of pinned legacy image allows strict container inspection, but never v2', async () => fixture(async ({ runtime, reload, mock }) => {
+test('GC of pinned legacy image allows strict container inspection', async () => fixture(async ({ runtime, reload, mock }) => {
   await runtime.build(); await runtime.start();
   const state = JSON.parse(await fs.readFile(runtime.file, 'utf8'));
   delete state.schema; delete state.profileVolume; state.imageId = OLD_IMAGE_ID;
@@ -445,11 +445,26 @@ test('GC of pinned legacy image allows strict container inspection, but never v2
   mock.state.Image = IMAGE_ID;
   await assert.rejects(() => reload().status(), /Unsafe browser/);
 }));
-test('missing v2 image cannot be used even with a pinned container', async () => fixture(async ({ runtime, reload, mock }) => {
+test('GC of pinned v2 image allows verified metadata and cleanup, but refuses tampering', async () => fixture(async ({ runtime, reload, mock }) => {
   await runtime.build(); await runtime.start();
   mock.missingV2Image = true;
+  assert.equal((await reload().status()).imageId, IMAGE_ID);
+  mock.state.Config.Entrypoint.push('/foreign');
   await assert.rejects(() => reload().status(), /Unsafe browser/);
   await assert.rejects(() => reload().stop(), /Unsafe browser/);
+  mock.state.Config.Entrypoint.pop();
+  mock.state.Image = OLD_IMAGE_ID;
+  await assert.rejects(() => reload().status(), /Unsafe browser/);
+  mock.state.Image = IMAGE_ID;
+  mock.state.Mounts[1].Name = 'foreign-profile';
+  await assert.rejects(() => reload().status(), /Unsafe browser/);
+  mock.state.Mounts[1].Name = mock.volume.Name;
+  await reload().stop();
+  assert.ok(mock.calls.some(a => a[0] === 'rm' && a[1] === CID));
+  assert.ok(!mock.calls.some(a => a[0] === 'volume' && a[1] === 'rm'));
+  const launches = mock.calls.filter(a => a[0] === 'run').length;
+  await assert.rejects(() => reload().start(), 'Missing image must not launch a new container');
+  assert.equal(mock.calls.filter(a => a[0] === 'run').length, launches);
 }));
 test('crashed/stopped owned container with cleared published port can still be inspected and removed', async () => fixture(async ({ runtime, reload, mock }) => {
   await runtime.build(); await runtime.start();
