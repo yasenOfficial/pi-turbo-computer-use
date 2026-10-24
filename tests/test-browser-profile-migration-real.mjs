@@ -32,7 +32,7 @@ const runtimeDir = path.join(fixture, 'runtime'), stateDir = path.join(fixture, 
 await fs.mkdir(runtimeDir, { mode: 0o700 }); await fs.mkdir(stateDir, { mode: 0o700 });
 const sessionId = `fixture-migrate-${randomUUID()}`;
 const options = { sessionId, runtimeDir, stateDir, uid };
-let oldRuntime, runtime, source, current, migrated = false, legacyBuilt = false, phase = 'preflight';
+let oldRuntime, runtime, otherRuntime, source, current, migrated = false, legacyBuilt = false, phase = 'preflight';
 async function docker(args) {
   try { return (await exec('docker', args, { timeout: 30_000, maxBuffer: 8 * 1024 * 1024 })).stdout.trim(); }
   catch (e) {
@@ -128,15 +128,33 @@ async function marker(handle, create) {
     await docker([...args, 'test', '-f', '/home/browser/profile/user.js']);
   }
 }
+async function cleanupSourceAfterFailedImport() {
+  const info = await assertOwned(source, true);
+  assert.equal(info.State.Paused, false);
+  const state = JSON.parse(await fs.readFile(path.join(stateDir, `${oldRuntime.key}.json.adopted`), 'utf8'));
+  assert.equal(state.key, oldRuntime.key); assert.equal(state.containerId, source.containerId);
+  assert.equal(state.name, source.name); assert.equal(state.id, source.id);
+  const network = await inspect('network', state.networkId);
+  assert.equal(network.Id, state.networkId); assert.equal(network.Name, state.network);
+  assert.equal(network.Labels[OWNER], 'v1');
+  assert.equal(network.Labels[`${OWNER}.id`], source.id);
+  assert.equal(info.HostConfig.NetworkMode, state.network);
+  await docker(['stop', '--time', '10', source.containerId]);
+  await docker(['rm', source.containerId]);
+  await docker(['network', 'rm', state.networkId]);
+}
 async function cleanupVolume() {
   if (!runtime) return;
-  const name = `pi-computer-profile-${runtime.key}`;
+  const profile = JSON.parse(await fs.readFile(path.join(stateDir, `profile-${runtime.key}.json`), 'utf8'));
+  const name = profile.name;
+  assert.equal(profile.key, runtime.key);
+  assert.equal(name, `pi-computer-profile-${profile.volumeKey}`);
   let volume;
   try { volume = await inspect('volume', name); }
   catch (e) { if (e.code === 'NOT_FOUND') return; throw e; }
   assert.equal(volume.Name, name); assert.equal(volume.Driver, 'local');
   assert.equal(volume.Labels[OWNER], 'v1'); assert.equal(volume.Labels[`${OWNER}.schema`], SCHEMA);
-  assert.equal(volume.Labels[`${OWNER}.key`], runtime.key);
+  assert.equal(volume.Labels[`${OWNER}.key`], profile.volumeKey);
   assert.equal(volume.Labels[`${OWNER}.uid`], String(uid));
   await docker(['volume', 'rm', name]);
 }
@@ -158,18 +176,32 @@ try {
   await fs.writeFile(path.join(stateDir, 'image.json'), JSON.stringify({ imageId: LEGACY }), { mode: 0o600 });
   oldRuntime = new LegacyRuntime({ ...options, docker: oldDocker });
   runtime = new BrowserDockerRuntime({ ...options, docker });
+  otherRuntime = new BrowserDockerRuntime({ ...options, sessionId: `another-pi-chat-${randomUUID()}`, docker });
+  assert.equal(runtime.key, otherRuntime.key);
+  assert.notEqual(oldRuntime.key, runtime.key);
   phase = 'legacy start'; source = await oldRuntime.start(); await assertOwned(source, true); await ping(source);
   await marker(source, true);
+  phase = 'shared owner adoption';
+  assert.equal((await runtime.status()).handle.containerId, source.containerId);
+  assert.equal((await otherRuntime.status()).handle.containerId, source.containerId);
+  const archived = JSON.parse(await fs.readFile(`${oldRuntime.file}.adopted`, 'utf8'));
+  const shared = JSON.parse(await fs.readFile(runtime.file, 'utf8'));
+  assert.equal(archived.key, oldRuntime.key);
+  assert.equal(archived.containerId, source.containerId);
+  assert.equal(shared.key, runtime.key);
+  assert.equal(shared.containerId, source.containerId);
+  await assert.rejects(fs.stat(oldRuntime.file), { code: 'ENOENT' });
   // Switch only the private pin; the old container stays alive until import is verified.
   await fs.writeFile(path.join(stateDir, 'image.json'), JSON.stringify({ imageId: v2id }), { mode: 0o600 });
   phase = 'profile import'; await runtime.migrateLegacyProfile();
   assert.equal((await assertOwned(source, true)).State.Paused, false);
-  await runtime.stop(); source = undefined; migrated = true;
-  phase = 'v2 start'; current = await runtime.start(); await assertOwned(current, false); await ping(current);
+  migrated = true; await runtime.stop(); source = undefined;
+  phase = 'v2 start'; current = await otherRuntime.start(); await assertOwned(current, false); await ping(current);
+  assert.equal((await runtime.status()).handle.containerId, current.containerId);
   await marker(current, false);
   assert.equal((await runtime.viewerInfo()).authentication, 'none');
   const previousId = current.containerId;
-  phase = 'v2 recreation'; await runtime.stop(); current = await runtime.start();
+  phase = 'v2 recreation'; await runtime.stop(); current = undefined; current = await otherRuntime.start();
   assert.notEqual(current.containerId, previousId);
   await ping(current); await marker(current, false);
   console.log('PASS: isolated legacy profile import, v2 no-auth viewer, and marker retention across removal/recreation');
@@ -181,12 +213,13 @@ try {
   // owned container/network before deletion. On failed import use the old API.
   if (current) await runtime.stop();
   else if (source) {
-    const info = await assertOwned(source, true);
-    if (info.State.Paused) await docker(['unpause', source.containerId]);
-    await oldRuntime.stop();
+    if (migrated) await runtime.stop();
+    else if (await fs.stat(oldRuntime.file).then(() => true, () => false)) await oldRuntime.stop();
+    else await cleanupSourceAfterFailedImport();
   } else if (migrated) await runtime.stop();
   else if (oldRuntime) await oldRuntime.stop();
-  await cleanupVolume();
+  if (await fs.stat(path.join(stateDir, `profile-${runtime?.key}.json`)).then(() => true, () => false))
+    await cleanupVolume();
   if (legacyBuilt) {
     const image = await inspect('image', legacyTag);
     assert.equal(image.Id, LEGACY);

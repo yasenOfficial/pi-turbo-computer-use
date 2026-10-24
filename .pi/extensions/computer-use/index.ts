@@ -35,6 +35,7 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 	});
 	pi.on("session_tree", async (_event, ctx) => {
 		await workflow.close();
+		await target.releaseControl(ctx);
 		context = ctx;
 		// Tree navigation can move from Docker to an older host-ON branch.
 		// Never inherit desktop authorization across a branch/target transition.
@@ -57,11 +58,16 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		const outcome = mode.takeCompletion();
 		loadout.clearCapture();
 		await workflow.close();
+		await target.releaseControl(ctx);
 		await mode.notifyCompletion(outcome, ctx);
 	});
 	pi.on("session_shutdown", async (_event, ctx) => {
+		// An explicit /browser use may still be preparing an image. Do not let an
+		// asynchronous completion enable Computer use after this session shuts down.
+		target.interrupt();
 		mode.shutdown(ctx);
 		await workflow.stop();
+		await target.releaseControl(ctx);
 		context = undefined;
 	});
 }

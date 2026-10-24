@@ -741,6 +741,8 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 				const gate = pin ? target!.startup(ctx, pin.target) : startup;
 				try {
 				if (command.name === "desktop_paste_text") pasteParameters(params);
+				if (pin && !["desktop_stop", "desktop_ping", "desktop_metrics"].includes(command.name))
+					await target!.acquireControl(ctx, pin.target, signal);
 				if (command.name !== "desktop_stop" && !command.readOnly) gate?.assertInputAllowed();
 				if (command.name === "desktop_stop") gate?.markStopped();
 				else if (command.name === "desktop_ping" || command.name === "desktop_metrics") await gate?.ensure(signal);

@@ -7,6 +7,37 @@ import type { DesktopTarget } from "./target.js";
 
 /** A command in the current Pi session; no daemon or agent activity at registration time. */
 export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseMode, routing?: ComputerUseRouting, loadout?: DesktopLoadout, debug?: ComputerUseDebug, target?: DesktopTarget): void {
+	pi.registerCommand("browser", {
+		description: "Explicitly use the one shared managed Docker browser; off stops it for all Pi chats and retains its profile",
+		getArgumentCompletions: prefix => {
+			const values = ["use", "use off", "use pause"].filter(value => value.startsWith(prefix));
+			return values.length ? values.map(value => ({ value, label: value })) : null;
+		},
+		handler: async (args, ctx) => {
+			const action = args.trim();
+			if (!target || !mode || (action !== "use" && action !== "use off" && action !== "use pause")) {
+				ctx.ui.notify("Use /browser use, /browser use pause, or /browser use off.", "warning"); return;
+			}
+			try {
+				if (action === "use") {
+					const operation = target.browserUse(ctx); // pins Docker and turns OFF before any asynchronous preparation
+					loadout?.sync(false, routing?.isHybrid());
+					if (ctx.hasUI) ctx.ui.notify("Подготвям изолирания браузър; първото изграждане може да отнеме няколко минути…", "info");
+					ctx.ui.notify(await operation, "info");
+				} else if (action === "use off") {
+					const operation = target.browserOff(ctx); // abort and hard OFF immediately, before awaiting cleanup
+					loadout?.sync(false, routing?.isHybrid());
+					ctx.ui.notify(await operation, "info");
+				} else {
+					const operation = target.command("docker pause", ctx);
+					loadout?.sync(false, routing?.isHybrid());
+					ctx.ui.notify(await operation, "info");
+				}
+			} catch (error) { ctx.ui.notify(error instanceof Error ? error.message : "Browser operation failed; Computer use remains OFF.", "error"); }
+			routing?.refreshLabel(ctx);
+			loadout?.sync(mode.isEnabled(), routing?.isHybrid());
+		},
+	});
 	pi.registerCommand("computer-use", {
 		description: "Toggle persistent computer-use mode, or send a desktop task; no arguments for help",
 		getArgumentCompletions: (prefix) => {
@@ -59,7 +90,7 @@ export function registerComputerUseCommand(pi: ExtensionAPI, mode?: ComputerUseM
 				const tools = pi.getAllTools().filter(({ name }) => name.startsWith("desktop_"));
 				const active = new Set(pi.getActiveTools());
 				const enabled = tools.filter(({ name }) => active.has(name)).length;
-				ctx.ui.notify(`Computer-use: ${tools.length} registered desktop_* tools (${enabled} active). Mode: ${mode?.isEnabled() ? "ON" : "OFF"}. Target: ${target?.target ?? "host"}. Daemon connectivity and input state not checked; use desktop_ping to check.\nUsage: /computer-use toggle (or on/off) controls direct desktop prompts and a persistent ON bar. OFF blocks desktop observations/actions except emergency Stop and metadata-only ping/metrics. /computer-use <task> requires ON (queued as follow-up if busy). Desktop notifications are sent at final settlement; blockers use Action required (desktop_request_user), user abort is silent. /computer-use models hybrid automatically selects Sol/Luna from the currently selected account/provider for visible same-session Sol planning → Luna execution → one Sol escalation; models single restores the original model; /computer-use models shows routing information. No provider/model IDs need to be entered. Docker target: /computer-use docker build (explicit image build), docker start (selects isolated container, reuses its private persistent browser profile, stays OFF), docker status (localhost passwordless viewer link; legacy containers require explicit docker migrate before removal), docker migrate (OFF+idle; acknowledge legacy Stop, import into a private persistent profile, then replace the browser; never automatic), docker pause (OFF + abort + sticky daemon Stop; wait for acknowledgement before manual takeover), docker resume (explicit daemon-only restart, stays OFF), docker stop (OFF first; keeps the private profile; refuses unmigrated legacy ephemeral containers), /computer-use host (OFF first, explicit host selection). Docker failure never falls back to host. Optional private metrics: /computer-use debug on <neutral-label>, debug report, debug result pass|fail, debug off. Debug never enables computer use or records raw task/UI/image content.`, "info");
+				ctx.ui.notify(`Computer-use: ${tools.length} registered desktop_* tools (${enabled} active). Mode: ${mode?.isEnabled() ? "ON" : "OFF"}. Target: ${target?.target ?? "host"}. Daemon connectivity and input state not checked; use desktop_ping to check.\nPreferred Docker workflow: /browser use explicitly prepares, reuses or migrates the one shared managed browser and enables Computer use in this Pi session; /browser use off aborts this Pi run and removes the shared owned container for all Pi chats while retaining its common private profile (refuses if another chat owns an active run). No automatic startup. Advanced controls: /computer-use toggle (or on/off) controls direct desktop prompts and a persistent ON bar. OFF blocks desktop observations/actions except emergency Stop and metadata-only ping/metrics. /computer-use <task> requires ON (queued as follow-up if busy). Desktop notifications are sent at final settlement; blockers use Action required (desktop_request_user), user abort is silent. /computer-use models hybrid automatically selects Sol/Luna from the currently selected account/provider for visible same-session Sol planning → Luna execution → one Sol escalation; models single restores the original model; /computer-use models shows routing information. No provider/model IDs need to be entered. Docker target: /computer-use docker build (explicit image build), docker start (selects isolated container, reuses its private persistent browser profile, stays OFF), docker status (localhost passwordless viewer link; legacy containers require explicit docker migrate before removal), docker migrate (OFF+idle; acknowledge legacy Stop, import into a private persistent profile, then replace the browser; never automatic), docker pause (OFF + abort + sticky daemon Stop; wait for acknowledgement before manual takeover), docker resume (explicit daemon-only restart, stays OFF), docker stop (OFF first; keeps the private profile; refuses unmigrated legacy ephemeral containers), /computer-use host (OFF first, explicit host selection). Docker failure never falls back to host. Optional private metrics: /computer-use debug on <neutral-label>, debug report, debug result pass|fail, debug off. Debug never enables computer use or records raw task/UI/image content.`, "info");
 				return;
 			}
 			if (!mode?.isEnabled()) {

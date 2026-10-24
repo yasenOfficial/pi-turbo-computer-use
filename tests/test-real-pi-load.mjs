@@ -48,6 +48,9 @@ try {
 	assert.ok(loadedExtension, "extension was not loaded from disk");
 	const slashCommand = loadedExtension.commands.get("computer-use");
 	assert.ok(slashCommand, "real Pi loader did not register /computer-use");
+	const browserCommand = loadedExtension.commands.get("browser");
+	assert.ok(browserCommand, "real Pi loader did not register /browser use");
+	assert.deepEqual(browserCommand.getArgumentCompletions("").map(({ value }) => value), ["use", "use off", "use pause"]);
 	({ session } = await createAgentSession({
 		cwd, agentDir, settingsManager, resourceLoader,
 		sessionManager: SessionManager.inMemory(cwd),
@@ -112,6 +115,7 @@ try {
 	assert.equal((await toolCall("desktop_ping", "off-ping"))?.block, undefined);
 	assert.equal((await toolCall("desktop_metrics", "off-metrics"))?.block, undefined);
 	await session.prompt("/computer-use"); // Real Pi dispatch path; help must not prompt a model.
+	await session.prompt("/browser"); // Invalid arguments show help; no Docker process or model request.
 	await session.prompt("/computer-use instructions");
 	await session.prompt("/computer-use status");
 	await session.prompt("/computer-use models");

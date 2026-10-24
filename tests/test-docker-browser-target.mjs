@@ -57,7 +57,8 @@ try {
  const handle = { id: 'fixture', name: 'fixture', containerId: 'fixture-id', socketPath: socket };
  let state = 'absent', starts = 0, stops = 0, resumes = 0, viewerReads = 0, builds = 0, migrations = 0;
  let legacyViewer = false, migrationComplete = false, profileRetained = false;
- const runtime = { async status() { return state === 'running'
+ const runtime = { async acquireControl() {}, async releaseControl() {},
+  async status() { return state === 'running'
   ? { status: state, handle, authentication: legacyViewer ? 'legacy-password' : 'none', ...(legacyViewer ? { requiresRecreate: true } : {}) }
   : { status: state }; },
   async start() { if (state !== 'absent') throw Error('stop first'); state = 'running'; daemonStopped = false;
@@ -70,6 +71,7 @@ try {
   async stop() { if (legacyViewer && !migrationComplete) throw Error('Unmigrated legacy profile');
    state = 'absent'; stops++; },
   async build() { builds++; return { message: 'built', imageId: 'fixture' }; },
+  async prepare() { return { built: false, imageId: 'fixture' }; },
   async viewerInfo() { viewerReads++; return { url: 'http://127.0.0.1:6080/vnc.html',
    authentication: legacyViewer ? 'legacy-password' : 'none', ...(legacyViewer ? { requiresRecreate: true } : {}) }; } };
  target = new DesktopTarget(harness.pi, mode, workflow, id => { assert.equal(id, sessionId); return runtime; });
@@ -113,7 +115,7 @@ try {
  await tools.get('desktop_click').execute('click', { id: 'test-node' }, undefined, undefined, ctx);
  assert.ok(seen.some(r => r.cmd === 'control_activity' && r.action === 'begin'));
  assert.ok(seen.some(r => r.cmd === 'click'));
- await workflow.close();
+ await workflow.close(); await target.releaseControl(ctx);
  mode.start(ctx, 'reload'); target.restore(ctx);
  assert.equal(target.target, 'docker'); assert.equal(mode.isEnabled(), false, 'reload never restores Docker ON');
  assert.equal(starts, 1, 'reload reuses selected identity without restarting container');
@@ -125,6 +127,7 @@ try {
   { type: 'custom', customType: 'computer-use-target-v1', data: { target: 'host' } },
  ];
  const hostBranchCtx = { ...ctx, sessionManager: { getBranch: () => hostBranch, getSessionId: () => sessionId } };
+ await workflow.close(); await target.releaseControl(ctx);
  mode.restore(hostBranchCtx);
  assert.equal(mode.isEnabled(), true, 'older branch had host ON');
  target.restore(hostBranchCtx);
@@ -185,6 +188,7 @@ try {
  const secondPause = await cmd('docker pause');
  assert.match(secondPause, /daemon input stopped/);
  assert.equal(mode.isEnabled(), false); assert.equal(aborted, 2);
+ await workflow.close(); await target.releaseControl(ctx);
  mode.start(ctx, 'reload'); target.restore(ctx);
  assert.equal(target.target, 'docker'); assert.equal(mode.isEnabled(), false);
  assert.match(await cmd('docker resume'), /remains OFF/);

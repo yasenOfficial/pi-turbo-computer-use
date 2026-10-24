@@ -14,6 +14,36 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ID = /^[0-9a-f]{64}$/;
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
 const digest = value => createHash('sha256').update(value).digest('hex');
+const FINGERPRINT = /^[0-9a-f]{64}$/;
+const BUILD_FILES = ['daemon/Cargo.toml', 'daemon/Cargo.lock', 'daemon/build.rs',
+  'docker/browser/Dockerfile', 'docker/browser/entrypoint.sh', 'docker/browser/session.sh',
+  'docker/browser/daemon-control.sh', 'docker/browser/profile-import.sh'];
+async function sourceFingerprint(root) {
+  const files = [...BUILD_FILES];
+  const collect = async (dir, relative) => {
+    if (!(await fs.lstat(dir)).isDirectory()) deny();
+    const entries = (await fs.readdir(dir, { withFileTypes: true })).sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+    for (const entry of entries) {
+      const name = `${relative}/${entry.name}`;
+      const absolute = path.join(dir, entry.name);
+      if (entry.isDirectory()) await collect(absolute, name);
+      else if (entry.isFile() && entry.name.endsWith('.rs')) files.push(name);
+      else deny(); // No symlinks, target, hidden or unrelated build inputs.
+    }
+  };
+  await collect(path.join(root, 'daemon/src'), 'daemon/src');
+  const hash = createHash('sha256');
+  for (const relative of files.sort()) {
+    const filename = path.join(root, relative);
+    const meta = await fs.lstat(filename);
+    if (!meta.isFile() || meta.isSymbolicLink()) deny();
+    const bytes = await fs.readFile(filename);
+    hash.update(`${Buffer.byteLength(relative)}:${relative}:${bytes.length}:`);
+    hash.update(bytes);
+  }
+  return hash.digest('hex');
+}
 const deny = () => { throw new Error('Unsafe browser container state; refusing operation'); };
 function json(value) { try { return JSON.parse(value); } catch { return deny(); } }
 // Fixed source scripts: Docker cannot `cp` from a tmpfs profile. Quiesce only
@@ -120,7 +150,7 @@ function validState(s, key) {
     !IMAGE_ID.test(s.imageId) || !s.socketPath?.endsWith(`/${s.id}/ipc/pi-computer.sock`) ||
     !path.isAbsolute(s.socketPath) || (s.networkId !== null && !ID.test(s.networkId)) ||
     (s.schema !== undefined && s.schema !== SCHEMA) ||
-    (s.schema === SCHEMA && s.profileVolume !== `pi-computer-profile-${key}`)) deny();
+    (s.schema === SCHEMA && !/^pi-computer-profile-[0-9a-f]{64}$/.test(s.profileVolume))) deny();
 }
 function imageSafe(image, uid, legacy = false) {
   if (!IMAGE_ID.test(image.Id) || image.Config?.Labels?.[OWNER] !== 'v1' ||
@@ -189,8 +219,13 @@ export class BrowserDockerRuntime {
     if (typeof sessionId !== 'string' || !sessionId || sessionId.length > 2048 || typeof runtimeDir !== 'string' ||
       !path.isAbsolute(runtimeDir) || typeof stateDir !== 'string' || !path.isAbsolute(stateDir) ||
       !Number.isSafeInteger(uid) || uid <= 0) throw new Error('Invalid browser runtime configuration');
-    this.key = digest(sessionId); this.docker = docker; this.runtimeDir = runtimeDir;
-    this.stateDir = stateDir; this.uid = uid; this.root = repositoryRoot; this.archiveTransfer = archiveTransfer;
+    // One browser/profile per host user and canonical private state directory,
+    // regardless of which Pi conversation selected it. Preserve the old key
+    // only to recognize previously owned per-session metadata.
+    this.key = digest(`shared-browser-v1:${uid}:${path.resolve(stateDir)}`);
+    this.previousKey = digest(sessionId);
+    this.docker = docker; this.runtimeDir = runtimeDir;
+    this.stateDir = path.resolve(stateDir); this.uid = uid; this.root = repositoryRoot; this.archiveTransfer = archiveTransfer;
     this.file = path.join(stateDir, `${this.key}.json`);
     this.imageFile = path.join(stateDir, 'image.json');
     this.profileFile = path.join(stateDir, `profile-${this.key}.json`);
@@ -202,7 +237,136 @@ export class BrowserDockerRuntime {
     await secureDir(this.stateDir, this.uid, true);
     await secureDir(this.base, this.uid, true);
   }
-  async #owned() { await this.#dirs(); const s = await record(this.file, this.uid); if (s) validState(s, this.key); return s; }
+  async #owned() {
+    await this.#dirs();
+    const shared = await record(this.file, this.uid);
+    const names = (await fs.readdir(this.stateDir)).sort();
+    const old = names.filter(name => /^[0-9a-f]{64}\.json$/.test(name) && name !== `${this.key}.json`);
+    if (shared) {
+      validState(shared, this.key);
+      if (old.length) deny(); // never ignore another concurrently owned browser
+      return shared;
+    }
+    // Import metadata only, never browser profile bytes or a Docker object by
+    // name. A prior per-chat record is eligible only if uniquely verified.
+    if (old.length > 1) deny(); // never choose between different users' work
+    if (!old.length) {
+      const archives = names.filter(name => /^[0-9a-f]{64}\.json\.adopted$/.test(name));
+      if (archives.length > 1) deny();
+      if (archives.length) {
+        const key = archives[0].slice(0, 64);
+        const prior = await record(path.join(this.stateDir, archives[0]), this.uid);
+        validState(prior, key);
+        const retained = await record(this.profileFile, this.uid);
+        if (!retained || retained.key !== this.key || retained.uid !== this.uid || retained.schema !== SCHEMA) deny();
+        if (prior.schema !== SCHEMA) {
+          const migration = await record(this.migrationFile, this.uid);
+          if (!migration || migration.key !== this.key || migration.phase !== 'complete' ||
+              migration.sourceId !== prior.containerId) deny();
+        }
+        // A crash between archiving the old record and saving the shared
+        // owner must not launch a second Firefox on the same profile volume.
+        await this.#localDocker();
+        if (await this.#inspect(['container', 'inspect', '--format', '{{json .}}', prior.containerId])) deny();
+      }
+      return null;
+    }
+    const name = old[0] === `${this.previousKey}.json` ? `${this.previousKey}.json` : old[0];
+    const oldKey = name.slice(0, 64);
+    const former = path.join(this.stateDir, name);
+    const previous = await record(former, this.uid);
+    validState(previous, oldKey);
+    if (await record(this.profileFile, this.uid) || await record(this.migrationFile, this.uid)) deny();
+    await this.#localDocker();
+    const checked = await this.#checked(previous, oldKey);
+    if (!checked) deny(); // never lose an unmounted ephemeral profile
+    const oldMigration = await record(path.join(this.stateDir, `migration-${oldKey}.json`), this.uid);
+    if (oldMigration && (oldMigration.key !== oldKey || oldMigration.sourceId !== previous.containerId ||
+        !['pending', 'complete'].includes(oldMigration.phase))) deny();
+    const oldProfile = await record(path.join(this.stateDir, `profile-${oldKey}.json`), this.uid);
+    if (previous.schema === SCHEMA && !oldProfile) deny();
+    if (oldProfile) {
+      const profileOwner = { key: oldKey, profileVolume: oldProfile.name };
+      if (previous.schema === SCHEMA && oldProfile.name !== previous.profileVolume) deny();
+      await this.#profile(profileOwner, false, oldKey);
+    }
+    if (oldMigration && !oldProfile) deny();
+    const archive = `${former}.adopted`;
+    if (names.includes(`${name}.adopted`)) deny();
+    // Archive the private old owner record without deleting it. A crash in
+    // this tiny metadata transaction fails closed; no profile is removed.
+    await fs.rename(former, archive);
+    if (oldProfile) await save(this.profileFile, {
+      name: oldProfile.name, key: this.key, volumeKey: oldKey, uid: this.uid, schema: SCHEMA,
+    });
+    if (oldMigration) await save(this.migrationFile, { ...oldMigration, key: this.key });
+    const adopted = { ...previous, key: this.key };
+    await save(this.file, adopted);
+    return adopted;
+  }
+  async #controlRecord() {
+    const dir = path.join(this.stateDir, `${this.key}.control`);
+    let stat;
+    try { stat = await fs.lstat(dir); }
+    catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== this.uid ||
+        (stat.mode & 0o7777) !== 0o700) deny();
+    const owner = await record(path.join(dir, 'owner.json'), this.uid);
+    // A missing owner file is an uncertain in-progress acquisition: no steal.
+    if (!owner || !UUID.test(owner.ownerId) || !Number.isSafeInteger(owner.pid) || owner.pid <= 0 ||
+        !/^[0-9]+$/.test(owner.processStart || '')) deny();
+    return { dir, owner };
+  }
+  async #processStart() {
+    // /proc/<pid>/stat starttime (field 22), stable across PID reuse. Never
+    // expose raw process arguments or environment in state or diagnostics.
+    const text = await fs.readFile(`/proc/${process.pid}/stat`, 'utf8');
+    const end = text.lastIndexOf(') ');
+    if (end < 0) deny();
+    const fields = text.slice(end + 2).trim().split(/\s+/);
+    const start = fields[19]; // field 3 at index 0
+    if (!/^[0-9]+$/.test(start || '')) deny();
+    return start;
+  }
+  async acquireControl(ownerId) {
+    if (!UUID.test(ownerId || '')) throw new Error('Invalid browser control owner');
+    await this.#dirs();
+    const dir = path.join(this.stateDir, `${this.key}.control`);
+    const start = await this.#processStart();
+    try { await fs.mkdir(dir, { mode: 0o700 }); }
+    catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      const held = await this.#controlRecord();
+      if (held?.owner.ownerId === ownerId && held.owner.pid === process.pid &&
+          held.owner.processStart === start) return;
+      throw new Error('Browser is being controlled by another Pi chat; wait for it to finish');
+    }
+    try {
+      await secureDir(dir, this.uid);
+      await fs.writeFile(path.join(dir, 'owner.json'), JSON.stringify({ ownerId, pid: process.pid,
+        processStart: start }), { mode: 0o600, flag: 'wx' });
+    } catch (error) {
+      // Leave an uncertain empty claim in place rather than stealing a lock.
+      throw error;
+    }
+  }
+  async releaseControl(ownerId) {
+    if (!UUID.test(ownerId || '')) throw new Error('Invalid browser control owner');
+    await this.#dirs();
+    const held = await this.#controlRecord();
+    if (!held) return;
+    if (held.owner.ownerId !== ownerId || held.owner.pid !== process.pid ||
+        held.owner.processStart !== await this.#processStart())
+      throw new Error('Browser control belongs to another Pi chat; refusing release');
+    const file = path.join(held.dir, 'owner.json');
+    const before = await fs.lstat(file);
+    const again = await this.#controlRecord();
+    const current = await fs.lstat(file);
+    if (!again || again.owner.ownerId !== ownerId || current.ino !== before.ino ||
+        current.dev !== before.dev) deny();
+    await fs.unlink(file);
+    await fs.rmdir(held.dir); // never recursive or cross-owner cleanup
+  }
   async #locked(action, lockName = this.key) {
     await this.#dirs();
     // Atomic same-session lock across instances/reloads. A lock left by a
@@ -224,26 +388,29 @@ export class BrowserDockerRuntime {
     try { return json(await this.docker(args)); }
     catch (e) { if (e?.code === 'NOT_FOUND') return null; throw e; }
   }
-  async #profile(s, create = false) {
-    const name = `pi-computer-profile-${this.key}`;
-    if (s.profileVolume !== name || s.key !== this.key) deny();
-    const owned = await record(this.profileFile, this.uid);
-    if (owned && (owned.name !== name || owned.key !== this.key || owned.uid !== this.uid || owned.schema !== SCHEMA)) deny();
+  async #profile(s, create = false, recordKey = this.key) {
+    const file = path.join(this.stateDir, `profile-${recordKey}.json`);
+    const owned = await record(file, this.uid);
+    const volumeKey = owned?.volumeKey ?? recordKey;
+    const name = owned?.name ?? `pi-computer-profile-${recordKey}`;
+    if (s.profileVolume !== name || s.key !== recordKey ||
+        !FINGERPRINT.test(volumeKey) || name !== `pi-computer-profile-${volumeKey}`) deny();
+    if (owned && (owned.key !== recordKey || owned.uid !== this.uid || owned.schema !== SCHEMA)) deny();
     if (!owned && !create) deny();
     let volume = await this.#inspect(['volume', 'inspect', '--format', '{{json .}}', name]);
     if (!owned) {
       // Never adopt an unknown existing volume by its predictable name.
       if (volume) deny();
-      await save(this.profileFile, { name, key: this.key, uid: this.uid, schema: SCHEMA });
+      await save(file, { name, key: recordKey, volumeKey, uid: this.uid, schema: SCHEMA });
       await this.docker(['volume', 'create', '--driver', 'local', '--label', `${OWNER}=v1`,
-        '--label', `${OWNER}.schema=${SCHEMA}`, '--label', `${OWNER}.key=${this.key}`,
+        '--label', `${OWNER}.schema=${SCHEMA}`, '--label', `${OWNER}.key=${volumeKey}`,
         '--label', `${OWNER}.uid=${this.uid}`, name]);
       volume = await this.#inspect(['volume', 'inspect', '--format', '{{json .}}', name]);
     }
     if (!volume || volume.Name !== name || volume.Driver !== 'local' || volume.Scope !== 'local' ||
         (volume.Options && Object.keys(volume.Options).length !== 0) ||
         volume.Labels?.[OWNER] !== 'v1' || volume.Labels?.[`${OWNER}.schema`] !== SCHEMA ||
-        volume.Labels?.[`${OWNER}.key`] !== this.key || volume.Labels?.[`${OWNER}.uid`] !== String(this.uid)) deny();
+        volume.Labels?.[`${OWNER}.key`] !== volumeKey || volume.Labels?.[`${OWNER}.uid`] !== String(this.uid)) deny();
     return name;
   }
   async #network(s) {
@@ -251,7 +418,7 @@ export class BrowserDockerRuntime {
     if (!n || n.Id !== s.networkId || n.Name !== s.network || n.Driver !== 'bridge' || n.Internal !== false ||
        n.Labels?.[OWNER] !== 'v1' || n.Labels?.['org.pi-computer.browser.id'] !== s.id) deny();
   }
-  async #checked(s) {
+  async #checked(s, recordKey = this.key) {
     if (!s.containerId || !s.networkId) deny();
     const ipc = path.join(this.base, s.id, 'ipc');
     if (s.socketPath !== path.join(ipc, 'pi-computer.sock')) deny();
@@ -273,7 +440,7 @@ export class BrowserDockerRuntime {
     // An old image may have been garbage-collected while its container runs.
     // Its pinned container ID/image ID, labels, UID and mounts remain mandatory.
     const port = containerSafe(info, s, ipc, this.uid);
-    if (s.schema === SCHEMA) await this.#profile(s);
+    if (s.schema === SCHEMA) await this.#profile(s, false, recordKey);
     return { info, port };
   }
   #importHelper(info, helperId, name, volume, imageId) {
@@ -305,7 +472,8 @@ export class BrowserDockerRuntime {
     if (!pin || !IMAGE_ID.test(pin.imageId)) throw new Error('Build v2 browser image explicitly first');
     const image = await this.#inspect(['image', 'inspect', '--format', '{{json .}}', pin.imageId]);
     if (!image) deny(); imageSafe(image, this.uid);
-    const destination = { key: this.key, profileVolume: `pi-computer-profile-${this.key}` };
+    const retained = await record(this.profileFile, this.uid);
+    const destination = { key: this.key, profileVolume: retained?.name ?? `pi-computer-profile-${this.key}` };
     // A pending marker quarantines a failed/partial import. Never retry into
     // a potentially populated profile or silently replace existing data.
     await save(this.migrationFile, { key: this.key, phase: 'pending', sourceId: s.containerId });
@@ -350,8 +518,7 @@ export class BrowserDockerRuntime {
     await save(this.migrationFile, { key: this.key, phase: 'complete', sourceId: s.containerId });
     return { message: 'Private browser profile copied to a retained Docker volume; stop the legacy container before browsing further' };
   }); }
-  async build() { return this.#locked(() => this.#locked(async () => {
-    await this.#dirs(); await this.#localDocker();
+  async #buildImage(sourceFingerprintValue) {
     // Stage exactly the Rust inputs and owned Dockerfiles, never the repository
     // root, .git, local profiles, artifacts, .env, target, or private state.
     const stage = await fs.mkdtemp(path.join(this.stateDir, 'build-'));
@@ -376,10 +543,39 @@ export class BrowserDockerRuntime {
       await this.docker(['build', '--pull', '--build-arg', `BROWSER_UID=${this.uid}`, '--label', `${OWNER}=v1`, '--tag', IMAGE,
         '--file', path.join(stage, 'docker/browser/Dockerfile'), stage]);
       const image = json(await this.docker(['image', 'inspect', '--format', '{{json .}}', IMAGE])); imageSafe(image, this.uid);
-      await save(this.imageFile, { imageId: image.Id });
+      if (await sourceFingerprint(this.root) !== sourceFingerprintValue)
+        throw new Error('Browser sources changed during build; retry preparation');
+      await save(this.imageFile, { imageId: image.Id, sourceFingerprint: sourceFingerprintValue });
       return { message: 'Browser image built explicitly', imageId: image.Id };
     } finally { await fs.rm(stage, { recursive: true, force: true }); }
+  }
+  async build() { return this.#locked(() => this.#locked(async () => {
+    await this.#localDocker();
+    return this.#buildImage(await sourceFingerprint(this.root));
   }, 'image-build')); }
+  async prepare() { return this.#locked(async () => {
+    await this.#localDocker();
+    const fingerprint = await sourceFingerprint(this.root);
+    const pin = await record(this.imageFile, this.uid);
+    if (pin && (!IMAGE_ID.test(pin.imageId) ||
+        (pin.sourceFingerprint !== undefined && !FINGERPRINT.test(pin.sourceFingerprint)))) deny();
+    const tagged = await this.#inspect(['image', 'inspect', '--format', '{{json .}}', IMAGE]);
+    if (tagged) {
+      // A known v1 tag is outdated and can be explicitly replaced here;
+      // unknown/forged image metadata is never silently adopted or rebuilt.
+      imageSafe(tagged, this.uid, tagged.Config?.Labels?.[`${OWNER}.schema`] === undefined);
+    }
+    let pinned = null;
+    if (pin) {
+      pinned = await this.#inspect(['image', 'inspect', '--format', '{{json .}}', pin.imageId]);
+      if (pinned) imageSafe(pinned, this.uid, pinned.Config?.Labels?.[`${OWNER}.schema`] === undefined);
+    }
+    if (pin?.sourceFingerprint === fingerprint && tagged?.Id === pin.imageId &&
+        tagged?.Config?.Labels?.[`${OWNER}.schema`] === SCHEMA && pinned?.Id === pin.imageId)
+      return { built: false, imageId: pin.imageId };
+    const result = await this.#buildImage(fingerprint);
+    return { built: true, imageId: result.imageId };
+  }, 'image-build'); }
   async start() { return this.#locked(async () => {
     if (await this.#owned()) throw new Error('Browser session already exists; inspect or stop it first');
     await this.#localDocker();
@@ -390,8 +586,13 @@ export class BrowserDockerRuntime {
     const id = randomUUID(), name = `pi-computer-browser-${id}`, network = `pi-computer-net-${id}`;
     const dir = path.join(this.base, id), ipc = path.join(dir, 'ipc');
     await secureDir(ipc, this.uid, true); await secureDir(dir, this.uid);
+    const retained = await record(this.profileFile, this.uid);
+    if (retained && (retained.key !== this.key || retained.uid !== this.uid || retained.schema !== SCHEMA ||
+        retained.name !== `pi-computer-profile-${retained.volumeKey ?? this.key}` ||
+        !FINGERPRINT.test(retained.volumeKey ?? this.key))) deny();
     const s = { key: this.key, id, name, network, containerId: null, networkId: null, imageId: image.Id,
-      schema: SCHEMA, profileVolume: `pi-computer-profile-${this.key}`, socketPath: path.join(ipc, 'pi-computer.sock') };
+      schema: SCHEMA, profileVolume: retained?.name ?? `pi-computer-profile-${this.key}`,
+      socketPath: path.join(ipc, 'pi-computer.sock') };
     // The volume is the only durable browser data. It is never removed by stop.
     const migration = await record(this.migrationFile, this.uid);
     if (migration && (migration.key !== this.key || migration.phase !== 'complete' || !ID.test(migration.sourceId))) deny();
@@ -425,7 +626,7 @@ export class BrowserDockerRuntime {
     const checked = await this.#checked(s);
     if (!checked) return { status: 'stopped' };
     const { info, port } = checked;
-    return { status: info.State?.Running === true ? 'running' : 'stopped',
+    return { status: info.State?.Running === true ? 'running' : 'stopped', imageId: s.imageId,
       handle: { id: s.id, name: s.name, containerId: s.containerId, socketPath: s.socketPath },
       authentication: s.schema === SCHEMA ? 'none' : 'legacy-password',
       ...(s.schema === SCHEMA ? {} : { requiresRecreate: true }),
@@ -461,7 +662,10 @@ export class BrowserDockerRuntime {
         throw new Error('Legacy ephemeral browser profile: refusing stop/removal until explicitly migrated');
     }
     await this.#localDocker();
-    await this.#profile(s.schema === SCHEMA ? s : { key: this.key, profileVolume: `pi-computer-profile-${this.key}` });
+    const retained = await record(this.profileFile, this.uid);
+    await this.#profile(s.schema === SCHEMA ? s : {
+      key: this.key, profileVolume: retained?.name ?? `pi-computer-profile-${this.key}`,
+    });
     if (!s.containerId) {
       // A failed run may have created a container before its ID was returned.
       // Never adopt/delete an object by name: require it to be absent first.

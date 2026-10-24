@@ -14,7 +14,7 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 - Breathing blue screen-edge light and a smooth cursor-following halo during desktop work **including model thinking**, with expiring workflow leases and capture suspension.
 - Lazy daemon startup and safety/version validation before UI calls. Authenticated, idle, extension-owned daemons can upgrade gracefully; arbitrary or emergency-stopped processes are never forcibly replaced.
 - **Action required** handoff for MFA/2FA, CAPTCHA, missing/ambiguous login, approval, or a genuine technical blocker. Generic OS notifications contain no task text or credentials. User abort/Stop is silent.
-- Optional **Docker browser target**: isolated Firefox/virtual desktop, private accessibility bus, and localhost-only **passwordless** noVNC viewer and a persistent, per-session Docker profile volume. Watch or pause/take over without moving the host desktop's pointer or focus. Docker failures never fall back to host; this isolates desktop tools, **not Pi's host shell**. [Setup and limits](docs/DOCKER-BROWSER.md).
+- Optional **Docker browser target**: isolated Firefox/virtual desktop, private accessibility bus, and localhost-only **passwordless** noVNC viewer and one shared persistent Docker profile volume. Watch or pause/take over without moving the host desktop's pointer or focus. Docker failures never fall back to host; this isolates desktop tools, **not Pi's host shell**. [Setup and limits](docs/DOCKER-BROWSER.md).
 
 ## Requirements
 
@@ -87,23 +87,16 @@ For a user-only blocker, the agent calls `desktop_request_user`, explains the co
 
 ### Browser-only Docker mode
 
-With Computer use OFF and Pi idle:
-
 ```text
-/computer-use docker build          Explicit first-time image build
-/computer-use docker start          Reuse persistent browser profile; stays OFF
-/computer-use docker status         Show localhost viewer link; no password
-/computer-use on                    Enable agent control inside Docker
-/computer-use docker pause          OFF + abort + acknowledged native Stop
-/computer-use docker resume         Restart only stopped daemon; browser stays, mode OFF
-/computer-use on                    Explicitly resume agent control
+/browser use                       Prepare/start/check the browser and enable control
+/browser use off                   Stop it; retain the shared profile and logins
 ```
 
-Open the status link yourself in your normal browser; no viewer password is used. **Localhost is not authentication:** other local clients reaching the port can control the logged-in browser. Never expose/forward it publicly. Wait for confirmed pause before intervening.
+That's the normal workflow—no manual Docker build/start/migrate/status/ON sequence. The command handles image preparation, verified legacy migration and reuse, and shows the localhost viewer link automatically. Open it in your normal browser; no password is used. For manual takeover: `/browser use pause`, wait for confirmed Stop, then `/browser use` to resume. The first preparation can take several minutes.
 
-`off`, then `docker stop` removes the container but **retains its private profile volume**. `docker start` in the same Pi conversation reuses cookies/site data after restart/removal; sites can still expire sessions. Downloads outside the profile stay temporary. New/forked Pi sessions use separate profiles. An existing v1 temporary-profile container must be preserved with explicit **`/computer-use docker migrate`** while idle/OFF after reload/build; do not delete it first. The migration privately copies its profile before replacement and never prints cookies/passwords.
+**One browser and one persistent profile are shared across all Pi chats.** An exclusive per-run control claim prevents competing chats from interleaving automation. OFF stops the common browser for all chats. Cookies/site data survive restart/removal; websites may still expire sessions. Downloads outside the profile remain temporary. No live profile is migrated by installation/testing; explicit `/browser use` handles a uniquely verified old profile safely.
 
-To return to the real desktop use `host`, then `on` explicitly. No host X11/D-Bus/Docker socket, home or personal browser profile is mounted. Docker uses outbound bridge networking, **not network isolation**. Pi's ordinary bash/file tools remain on the host and are not sandboxed. Reload/shutdown leave the browser running until explicit stop. [Full guide, security and recovery](docs/DOCKER-BROWSER.md).
+**Localhost is not authentication:** other local clients reaching the port can control the logged-in browser. Never expose/forward it publicly. No host display/D-Bus/Docker socket, home or personal browser profile is mounted. Docker has outbound bridge networking, not network isolation; Pi's ordinary bash/file tools remain on the host. Reload/shutdown leave the browser running until explicit OFF. The old `/computer-use docker …` commands remain only for advanced diagnostics. [Guide and limits](docs/DOCKER-BROWSER.md).
 
 ### Native first; GUI when necessary
 
@@ -239,6 +232,7 @@ node tests/test-daemon-autostart-real.mjs
 node tests/test-daemon-upgrade.mjs
 node tests/test-launch-app.mjs
 node tests/test-browser-docker-runtime.mjs
+node tests/test-browser-use.mjs
 node tests/test-docker-browser-target.mjs
 ```
 

@@ -1,124 +1,94 @@
-# Isolated Docker browser target
+# Browser use — one shared isolated browser
 
-An optional target for the **same Pi session and the same `desktop_*` tools**. It runs one Firefox ESR browser with a dedicated persistent profile, Xvfb, a minimal window manager, private D-Bus/AT-SPI and the existing Rust daemon inside Docker. A localhost noVNC page lets you watch and take over. No nested agent, remote browser debugging, DOM automation or replacement Pi runtime is involved.
-
-## Start and watch
-
-After updating the extension, run `/reload`. While Pi is idle and Computer use is OFF:
+Use the existing Pi session and its normal `desktop_*` tools, without managing Docker yourself:
 
 ```text
-/computer-use docker build
-/computer-use docker start
-/computer-use docker status
+/browser use
+/browser use off
 ```
 
-`build` explicitly downloads the Debian/Rust/package dependencies and builds the image. It is not performed automatically by a tool or by loading the extension. The runtime pins the resulting local image ID. The first build can take several minutes.
+**`/browser use`** selects the isolated Docker target, prepares the image if missing/outdated, reuses or starts the browser, migrates a verified old temporary profile if needed, checks the daemon and localhost viewer, turns Computer use ON, and shows the viewer link. No separate build, status, migrate or ON command is required. First preparation can take several minutes; ordinary subsequent use reuses the image. Errors remain OFF and never fall back to the host desktop.
 
-`start` selects Docker **but leaves Computer use OFF**. `status` displays a link such as `http://127.0.0.1:32781/vnc.html`. Open it in your normal browser and press Connect: **there is no viewer password**. The port is allocated dynamically and bound only to IPv4 loopback. No password is generated, read, stored or transmitted. The viewer can remain open while you work in other host applications. Loopback is not authentication: other local clients can reach and control this viewer.
+**`/browser use off`** immediately turns mode OFF and aborts this Pi run, stops input in the owned browser, removes its container/network, and retains the common profile. It also handles an already-stopped container. If an old temporary profile needs migration before removal, it is preserved automatically rather than discarded. The command reports success only after verified cleanup; unsafe/uncertain states remain blocked instead of deleting data blindly.
 
-Then explicitly enable agent interaction:
+After installing an extension update, run `/reload` once so Pi loads the new command. Nothing starts on extension import, fresh Pi startup, session resume, `/reload` or an ordinary prompt. Browser use starts only because you explicitly run `/browser use`.
+
+## Watch or take over
+
+The command shows a link such as `http://127.0.0.1:32781/vnc.html`. Open it yourself in your normal browser and press Connect. **No password is required.** Your host pointer and window focus are independent of the container's virtual screen.
+
+For manual intervention:
 
 ```text
-/computer-use on
+/browser use pause
 ```
 
-Give browser tasks normally. The ON bar names **Docker browser**. Mouse, focus, keyboard, clipboard, AT-SPI and captures from registered desktop tools target the container's virtual screen—not the host screen. Existing visual-permission, saved-login and Action required rules still apply. You may sign into the isolated browser yourself; existing host browser logins/profiles are **not** copied.
+Wait for the confirmed paused message before using the viewer's mouse/keyboard. Pause turns Computer use OFF, aborts the run and requires the container daemon's sticky native Stop acknowledgment. Already-dispatched individual events cannot be undone. Unconfirmed Stop is never described as safe takeover or automatically retried. Clicking in the viewer alone does not pause automation.
 
-## Take over safely
+When finished, run **`/browser use`** again. This explicit command resumes the stopped daemon while preserving Firefox and the current page, checks readiness, and enables control. For login/MFA/CAPTCHA, complete the human step in the viewer, then resume and reply “готово” as appropriate. No account credentials or security codes should be sent to the model.
 
-```text
-/computer-use docker pause
-```
+## One browser and one profile for all Pi chats
 
-Pause turns Computer use OFF, aborts the active Pi run and sends the container daemon's native sticky Stop. **Wait for the confirmed paused message before intervening.** Already-dispatched individual events cannot be undone; native Stop prevents subsequent automation input/batch steps. If Stop is not acknowledged, the command says it is unconfirmed, stays OFF, and does not retry automatically. Merely clicking inside the viewer does not automatically pause the agent.
+There is **one common managed browser and one common persistent Docker profile** for the host user/private state directory, not a new volume per Pi conversation. Different chats see the same tabs, cookies and logins. Explicit use can reconnect after another chat recreated the browser; ordinary tool calls cannot silently adopt a changed socket/container.
 
-After completing your manual step:
+An atomic private control claim prevents two Pi chats from automating the shared browser concurrently. It is held across a whole agent run, including model thinking, and released after workflow cleanup. Commands that change/start/stop the browser also acquire the claim. A second active controller gets a busy message rather than interleaving input. Emergency Stop remains shared. **Stopping the common browser affects all chats**, not just the one issuing OFF.
 
-```text
-/computer-use docker resume
-/computer-use on
-```
+The common profile survives full container restart, removal/recreation and host reboot. Cookies, site storage, bookmarks and browser settings are retained; a website can still expire/revoke its session, and private-browsing/session-only cookies need not survive normal browser shutdown. This is persistent profile storage, not a guarantee that every site remains signed in.
 
-`resume` explicitly restarts **only the stopped container daemon**, preserving Firefox, its in-container login, the virtual screen and viewer. It stays OFF until `on`. It requires Pi/tools to be idle. It cannot silently reset a host Stop. The existing `/computer-use off` command alone blocks new calls but does not stop an already-running batch; use `docker pause` for takeover.
+Ordinary Downloads and the rest of the tmpfs home remain temporary. There is no host-profile import or download-export feature. The volume has no disk quota and is not automatically encrypted or backed up. Normal OFF/stop **never deletes the profile volume**. Deliberately deleting that Docker volume separately erases its saved sessions and data.
 
-For MFA/CAPTCHA, follow Action required through this viewer, then resume/enable as needed and reply “готово”. Do not share account credentials or security codes with the model.
+## Automatic upgrades without losing an old profile
 
-## Stop and return to the host
+`/browser use` automatically handles the uniquely owned previous temporary-profile container. It first prepares the new trusted image, requires native Stop acknowledgment, validates exact source ownership, briefly quiesces only that container's verified Firefox processes and streams its profile archive into a private, network-isolated volume-only importer. No cookies/profile bytes enter model context, logs or a host archive. An EXIT trap and recovery thaw resume the source browser. Only after a complete verified import is the old container removed and the passwordless persistent version started.
 
-```text
-/computer-use off
-/computer-use docker stop
-```
+Previous per-chat ownership metadata is adopted only when there is exactly one verified candidate. An existing persistent volume can become the common profile without copying/deleting it. Multiple old browsers/profiles, interrupted adoption, incomplete import or ambiguous ownership fail closed: **there is no automatic merging, deletion or selection of somebody's profile**. Such exceptional recovery needs review, not the normal Docker command sequence.
 
-This removes only the pinned, ownership-verified browser container/network and its private IPC directory. **Its dedicated Docker profile volume is retained**, including cookies, site storage, bookmarks and saved browser settings. A subsequent `docker start` in the same Pi session/resumed conversation reuses it, including after container removal or host reboot. Websites can still expire/revoke sessions; session-only cookies and policies such as private browsing need not survive a normal browser shutdown. This is profile persistence, not a guarantee that every website remains signed in.
+A partial import is quarantined by private metadata; failed import preserves the source. SQLite/WAL data is retained for browser recovery, while obsolete Firefox process-lock files are not reused. Tests/installation do not automatically migrate or stop an already-running real user browser. Migration happens on the explicit high-level command.
 
-The rest of the home, including ordinary Downloads, remains temporary. There is no host profile mount or download-export feature. A new/forked Pi session ID receives a separate profile; there is no automatic cross-session profile sharing. Profile disk usage is not capped by the RAM/tmpfs limits, nor encrypted/backed up automatically. `stop` never removes the profile volume; deleting it separately intentionally signs out/erases the stored data.
+## Desktop and security boundaries
 
-Containers are not removed on `/reload` or ordinary Pi shutdown: explicitly `stop` before exiting to avoid leaving an idle browser running.
+The container runs Firefox ESR, Xvfb, a minimal window manager, private D-Bus/AT-SPI and the existing Rust daemon. This is not a nested agent, browser-debugging/DOM automation stack or replacement Pi build.
 
-Stopping, startup failure or connection loss **never switches to host**. A Docker selection survives reload/resume/tree restoration but requires explicit `on` and fresh validation. A fork has its own runtime identity; it does not adopt the original browser automatically. To deliberately select the host while idle/OFF:
+- No host X11/Wayland/D-Bus socket, Docker socket, personal home, workspace or host browser profile is mounted. One fresh private IPC directory is bind-mounted; one verified Docker-managed named volume holds `/home/browser/profile`.
+- Non-root host UID, ALL capabilities dropped, no-new-privileges, read-only root, private PID/IPC/network namespaces; aggregate 2 CPUs, 2 GiB RAM/no extra swap, 512 PIDs and 256 MiB shared memory. Remaining home/runtime/tmp use bounded tmpfs. Large sites can hit limits.
+- Image/container/network/volume identity, mounts, runtime restrictions and loopback publication are checked before use. An IPC symlink, unexpected socket replacement or unsafe metadata blocks calls. Docker target failures never start/use the host daemon as fallback.
+- The viewer is **HTTP, unencrypted and unauthenticated**, bound only to host IPv4 loopback. Any local process/user able to reach the port can view/control the browser and its logged-in accounts. Localhost is **not authentication**; browser-origin behavior is not a replacement. Never expose/forward/proxy this port publicly.
+- The browser uses an outbound Docker bridge: internet and potentially LAN/host-gateway services remain reachable. This is not network isolation or a URL/domain egress allowlist.
+- Docker is not an absolute sandbox; kernel/container-escape risks remain. Docker-group control itself is host-privileged authority, exercised only by trusted fixed lifecycle operations.
+- **Only registered Computer Use desktop operations are routed to this isolated display. Pi's ordinary bash/file tools remain on the host with their existing permissions.** Instructions forbid host GUI launch while Docker is selected, but this is not an OS-enforced shell sandbox for the entire agent.
+- Watching noVNC yourself does not grant the model unrestricted screenshot permission. Existing exact visual grants, saved-login rules, human security handoffs, uncertain-input no-replay policy and sticky Stop remain in effect.
+- Native metadata/viewer health checks do not prove task success or universal accessibility. Browser accessibility varies by site; a single-page fixture is not a general browser compatibility guarantee.
 
-```text
-/computer-use host
-/computer-use on
-```
+## Advanced diagnostics and private state
 
-Multiple Pi session IDs receive separate runtime records, UUID containers, virtual displays and loopback ports. Multiple clients of the same Pi session are not separate desktop owners.
+The old `/computer-use docker build|start|status|pause|resume|migrate|stop` commands remain for diagnostics/manual recovery, not the normal workflow. They leave mode OFF where documented. Host desktop automation remains separately available through explicit `/computer-use host`, then `/computer-use on` while idle/OFF.
 
-## Upgrade an existing temporary-profile container
+Private runtime records, image/source fingerprint, lifecycle/control locks and profile/migration metadata live under `~/.local/state/pi-computer/docker` (or `XDG_STATE_HOME`). The shared identity is derived from host UID and the canonical state directory, not Pi session ID. IPC lives under `$XDG_RUNTIME_DIR/pi-computer-docker/<uuid>/ipc`. A previously verified volume may retain its old name after adoption; otherwise the common profile uses `pi-computer-profile-<shared-hash>`.
 
-An already-running v1 container retains its old password and tmpfs until explicitly migrated. Reloading code or building an image does not change its mounts or copy its cookies. To preserve its current data, use the same Pi conversation that owns it, while idle:
+Treat the entire profile volume as sensitive: it may contain live cookies, saved passwords and account data. Do not dump, log, publish or upload it. Source fingerprinting reads only trusted Docker build inputs and Rust sources, never profiles, `.git`, transcripts or private runtime data.
 
-```text
-/reload
-/computer-use off
-/computer-use docker build
-/computer-use docker migrate
-/computer-use docker status
-/computer-use on
-```
+A killed build can leave a lifecycle lock; a crashed Pi process can leave a control claim. Such uncertain claims are not stolen automatically. Verify the prior owner/operation ended before tightly scoped manual recovery. An uncertain Docker create ID is not adopted by name. No broad prune or unrelated container removal is used.
 
-`migrate` requires an acknowledged native Stop, validates exact source ownership, briefly quiesces only that container's verified Firefox processes and streams its profile archive directly into a private volume-only importer. The source container, daemon and viewer stay running; Firefox is resumed by an EXIT trap and a separate recovery thaw. No profile bytes enter model context, logs or a host archive. Only after a verified complete import does the command remove the old container and start the new passwordless one, still OFF. The localhost port may change. Firefox lock files are not reused; SQLite/WAL files and other profile data are preserved for browser recovery.
+## Verification
 
-Failed/uncertain Stop or import preserves the source container and stays OFF; do not delete it or repeatedly retry. A partial import is quarantined by private migration metadata and requires manual review. Legacy `stop` is refused before completed migration so it cannot silently discard a logged-in temporary profile. No real user container is migrated as a side effect of installing/testing this feature.
-
-## Boundaries and limitations
-
-- No host X11/Wayland/D-Bus socket, Docker socket, personal home, workspace or browser profile is mounted in the browser container. Only one fresh private IPC directory is bind-mounted; one ownership-verified Docker-managed named volume is mounted at `/home/browser/profile`. No host networking, host PID namespace, extra devices or privileged mode.
-- Non-root host UID, dropped capabilities, no-new-privileges, read-only root; aggregate 2 CPU, 2 GiB RAM/no extra swap, 512 PIDs, 256 MiB shared memory; bounded tmpfs home/runtime/tmp. Large sites can hit these limits.
-- Image/container/network identity, ownership labels, mounts, runtime restrictions and loopback publication are checked before use. An IPC symlink, changed socket identity, missing container or unsafe configuration fails closed. No host daemon autostart is used for a Docker target.
-- The browser uses a normal dedicated Docker **bridge with outbound networking**. This is **not network isolation**: internet and potentially LAN/host-gateway services are reachable. There is no URL/domain egress allowlist or guarantee against network scanning by compromised code.
-- noVNC HTTP is **local, unencrypted and unauthenticated by explicit choice**. Any process/user able to reach its loopback port can view the browser, control it and access its logged-in sessions. Never expose/forward the port publicly, put it behind a public proxy, or rely on an untrusted machine's other users. Browser-origin restrictions are not authentication. Localhost-only publication also relies on Docker and host firewall behavior.
-- Docker is not an absolute security sandbox. Docker-group access is host-privileged authority, used only by the trusted lifecycle helper. Container compromise still has a shared-kernel risk.
-- **This target isolates registered Computer Use desktop operations, not the entire Pi agent.** Pi's ordinary file/bash tools still run on the host with your existing permissions. Instructions prohibit host GUI launch while Docker is selected, but that is not an OS-enforced shell sandbox. A fully containerized Pi would be a separate architecture and is not provided here.
-- Watching the noVNC stream is a user action; it does not grant the model unrestricted screenshot permission. Captures still require the existing exact visual grant. Browser accessibility varies by site and is not universally sufficient.
-- Metadata probes do not prove browser readiness or task success. Input timeout/disconnect remains uncertain: no automatic replay. An unexpected daemon/critical process exit ends the container session rather than automatically reviving stopped automation.
-
-## Private state and recovery
-
-Runtime records/image pin and lifecycle locks live under `~/.local/state/pi-computer/docker` (or `XDG_STATE_HOME`), outside the repository. IPC lives under `$XDG_RUNTIME_DIR/pi-computer-docker/<uuid>/ipc`. Owner/profile/migration records are private metadata; they contain no browser cookies or viewer password. Persistent browser data lives in the per-session `pi-computer-profile-<session-hash>` Docker volume, not the source repository. Treat the entire volume as sensitive: it can contain live cookies, saved passwords and site data. Do not dump it into diagnostics or upload it. Only exact-owned volume metadata is inspected by lifecycle checks.
-
-A build interrupted by killing its process can leave a private lifecycle lock. Do not delete locks or adopt containers blindly. Verify that the owning operation ended and inspect only the known private session state; cleanup is limited to exact IDs, UUID names and ownership labels. An uncertain Docker create whose ID was not received is deliberately not adopted by name. No broad `docker prune`, `docker rm $(...)`, or unrelated container stop is used.
-
-## Development verification
-
-Fast source-only fixtures:
+Fast source/isolated IPC fixtures:
 
 ```sh
 node tests/test-browser-docker-runtime.mjs
+node tests/test-browser-use.mjs
 node tests/test-docker-browser-target.mjs
 ```
 
-They check fixed Docker arguments, image/container/network/volume validation, profile retention/reuse, legacy migration guards, stopped/incomplete cleanup, per-session locking, target pins, reload/fork, socket substitution refusal, pause/resume and no host fallback. They do not prove Docker containment or browser operation.
+They cover cached preparation, shared profile/ownership adoption, competing control claims, explicit ON/OFF, cancellation during build/start, legacy upgrade, image replacement, pause/resume, socket substitution and no host fallback.
 
-The optional real smoke test uses only a test-owned browser/container and a synthetic local page. It must never access the user's host desktop/profile or real accounts:
+Opt-in real integration, always using private fixture state/runtime roots so the production shared browser is inaccessible:
 
 ```sh
+RUN_BROWSER_USE_REAL=1 node tests/test-browser-use-real.mjs
 RUN_BROWSER_DOCKER_REAL=1 node tests/test-browser-docker-real.mjs
+RUN_BROWSER_PROFILE_MIGRATION_REAL=1 node tests/test-browser-profile-migration-real.mjs
 ```
 
-Completed for the v2 update: 19 runtime cases and focused target/mode/safety/extension/real-Pi-loader suites; the real v2 fixture passed passwordless RFB, native Firefox interaction, Stop/resume, and a dummy persistent cookie surviving both a full container restart and removal/recreation. The separate opt-in `RUN_BROWSER_PROFILE_MIGRATION_REAL=1 node tests/test-browser-profile-migration-real.mjs` also passed: it builds an isolated v1 fixture from tracked sources, imports its synthetic profile, and verifies retention after v2 removal/recreation. Test containers, networks, profile volumes, temporary files and the fixture image were cleaned up; the already-running real user container was not migrated/stopped or inspected for profile contents.
+Completed: real high-level use/reuse/pause/off/start with no repeated image build; passwordless RFB; Firefox native semantic click; sticky Stop and daemon-only resume; dummy persistent cookie surviving full restart and removal/recreation; synthetic v1 profile migration/adoption and recreation visible to two Pi session identities. Test-owned containers/networks/volumes/temp files and fixture images were removed. The live real-user legacy browser was not stopped/migrated or read for profile contents.
 
-Real migration testing exposed that Docker `cp` cannot archive this tmpfs profile, so the final implementation uses a fixed, Firefox-quiesced `docker exec` tar stream instead. Legacy containers remain strictly pinned/validated even when Docker no longer exposes their old image configuration; v2 image absence still fails closed. These are scripted integration checks, not live agent/provider, containment or performance benchmarks. No host GUI, screenshots, real accounts or user-profile data were used.
-
-Integration fixes found by the real smoke check included Docker bind-mount syntax, a missing container passwd entry, Firefox accessibility bootstrap, first-run UI and PID pressure. The final image keeps Firefox's sandbox enabled, caps its requested content-process counts and Tokio worker threads, and uses the 512 aggregate PID limit above. Static paragraph text can be omitted by the existing compact AT-SPI traversal; the fixture deliberately verifies an actionable button's changed label instead of treating an omitted paragraph as absent.
+These are scripted integration checks, not live agent/provider, security-containment or performance benchmarks. No host GUI, screenshots, real accounts or public-site tasks were used. Real tests previously found Docker tmpfs-copy limitations, Firefox onboarding/accessibility bootstrap and PID pressure; the implementation keeps Firefox's sandbox enabled and uses fixed exec streaming for migration.

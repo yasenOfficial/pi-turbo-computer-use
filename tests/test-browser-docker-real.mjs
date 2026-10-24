@@ -7,6 +7,8 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { createRequire } from 'node:module';
 import path from 'node:path';
+import os from 'node:os';
+import { mkdtemp, mkdir, rm } from 'node:fs/promises';
 import { BrowserDockerRuntime } from '../scripts/browser-docker.mjs';
 
 if (process.env.RUN_BROWSER_DOCKER_REAL !== '1') {
@@ -16,7 +18,13 @@ const release = process.env.PI_CODEX_ULTRA_RELEASE_ROOT;
 assert.ok(release, 'Use the current installed Pi SDK');
 const require = createRequire(path.join(release, 'node_modules/@earendil-works/pi-coding-agent/package.json'));
 const WebSocket = require('ws'), exec = promisify(execFile);
-const sessionId = `fixture-only-${randomUUID()}`, runtime = new BrowserDockerRuntime({ sessionId });
+const fixtureDir = await mkdtemp(path.join(os.tmpdir(), 'pbr-'));
+const runtimeDir = path.join(fixtureDir, 'r'), stateDir = path.join(fixtureDir, 's');
+await mkdir(runtimeDir, { mode: 0o700 }); await mkdir(stateDir, { mode: 0o700 });
+// Production has one shared browser: fixtures MUST use private state/runtime roots.
+const sessionId = `fixture-only-${randomUUID()}`, runtime = new BrowserDockerRuntime({ sessionId, runtimeDir, stateDir });
+const productionImage = (await exec('docker', ['image', 'inspect', '--format', '{{.Id}}', 'pi-computer-browser:local'])).stdout.trim();
+await import('node:fs/promises').then(fs => fs.writeFile(runtime.imageFile, JSON.stringify({ imageId: productionImage }), { mode: 0o600 }));
 let attempted = false, handle, viewer;
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 async function request(body) {
@@ -103,4 +111,5 @@ try {
  console.log('PASS: localhost passwordless RFB, native Firefox click, sticky Stop/resume, dummy persistent cookie surviving full restart AND container removal/recreation. No host GUI, screenshots or real accounts.');
 } finally {
  viewer?.close(); if (attempted) await runtime.stop(); await cleanupProfile();
+ await rm(fixtureDir, { recursive: true, force: true });
 }
