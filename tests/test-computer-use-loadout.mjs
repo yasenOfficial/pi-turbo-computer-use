@@ -87,6 +87,9 @@ assert.deepEqual(nonDesktop(), ["read", "bash", "another_extension"]);
 
 assert.ok(COMPUTER_USE_INSTRUCTIONS.length < 4100, "bounded ON instructions; no unsupported quota claim");
 assert.equal(COMPUTER_USE_INSTRUCTIONS.split(SAVED_LOGIN_POLICY).length, 2, "saved-login policy appears once");
+assert.ok(COMPUTER_USE_INSTRUCTIONS.includes('desktop_set_text({text:url}) WITHOUT id'), "initial URL path uses a basic-ON tool");
+assert.ok(COMPUTER_USE_INSTRUCTIONS.includes('require exact URL BEFORE Return'), "URL submission requires independent readback");
+assert.ok(COMPUTER_USE_INSTRUCTIONS.includes('not insertion proof'), "setter/paste acknowledgement is not browser insertion proof");
 for (const phrase of ["OFF forbids", "desktop_visual_permission", "single-use", "AT-SPI", "search_seen",
 	"revalidation", "smallest useful rectangle", "never parallel", "uncertain input", "desktop_request_user"])
 	assert.ok(COMPUTER_USE_INSTRUCTIONS.includes(phrase), phrase);

@@ -124,7 +124,7 @@ const commands: CommandDefinition[] = [
 	},
 	{
 		name: "desktop_set_text", label: "Set text",
-		description: "Replace the complete value of a revalidated editable semantic node with id, using native AT-SPI. Without id this is legacy SHORT layout-dependent typing. Use Pi write/edit for ordinary files/code, desktop_paste_text for GUI insertion/long Unicode; never retry uncertain text input via another method.",
+		description: "With id, replace a revalidated editable semantic node using native AT-SPI; acknowledgment is not independent readback. Without id, physically type SHORT layout-dependent text into the verified focused field: use this initial path for a short ASCII Firefox URL after Ctrl+L, then inspect exact URL before Return. Use Pi write/edit for ordinary files/code, desktop_paste_text for GUI insertion/long Unicode; never automatically retry uncertain input.",
 		parameters: Type.Object({ id, text: Type.String() }),
 	},
 	{

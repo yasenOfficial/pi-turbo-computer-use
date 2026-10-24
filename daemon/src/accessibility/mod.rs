@@ -99,7 +99,8 @@ fn is_actionable(role: &str) -> bool {
 }
 
 fn is_text_control(role: &str, states: Option<&[u32]>) -> bool {
-    role == "entry" || (role == "text" && states.is_some_and(|s| has_state(s, EDITABLE)))
+    role == "entry"
+        || (matches!(role, "text" | "combo box") && states.is_some_and(|s| has_state(s, EDITABLE)))
 }
 
 // A failed attempted read is different from a verified absent interface or
@@ -751,8 +752,11 @@ impl Accessibility {
                     bail!("untracked node state");
                 }
                 let states: Vec<u32> = timeout(CALL_TIMEOUT, proxy.call("GetState", &())).await??;
-                if has_state(&states, EDITABLE) && node.role == "text" && node.value.is_none() {
-                    bail!("text became editable");
+                if has_state(&states, EDITABLE)
+                    && matches!(node.role.as_str(), "text" | "combo box")
+                    && node.value.is_none()
+                {
+                    bail!("text control became editable");
                 }
                 let focused = has_state(&states, FOCUSED);
                 if kind == ChangeKind::Focus && focused {
@@ -769,7 +773,8 @@ impl Accessibility {
             ChangeKind::Value => {
                 let role = node.role.as_str();
                 let interface = if is_text_control(role, None)
-                    || (role == "text" && (node.value.is_some() || node.value_read_failed))
+                    || (matches!(role, "text" | "combo box")
+                        && (node.value.is_some() || node.value_read_failed))
                 {
                     TEXT
                 } else if matches!(role, "slider" | "spin button") {
@@ -1786,6 +1791,9 @@ mod tests {
         assert!(is_text_control("entry", None));
         assert!(!is_text_control("text", Some(&words)));
         assert!(is_text_control("text", Some(&[1 << EDITABLE])));
+        assert!(!is_text_control("combo box", None));
+        assert!(!is_text_control("combo box", Some(&words)));
+        assert!(is_text_control("combo box", Some(&[1 << EDITABLE])));
     }
 
     #[test]

@@ -27,6 +27,14 @@ Wait for the confirmed paused message before using the viewer's mouse/keyboard. 
 
 When finished, run **`/browser use`** again. This explicit command resumes the stopped daemon while preserving Firefox and the current page, checks readiness, and enables control. For login/MFA/CAPTCHA, complete the human step in the viewer, then resume and reply “готово” as appropriate. No account credentials or security codes should be sent to the model.
 
+## Basic URL navigation
+
+URL entry is normal automation, not a human security handoff. For a short ASCII address in the managed Firefox, the agent is instructed to focus the observed browser window, use Ctrl+L, initially use the already-declared `desktop_set_text({text:url})` **without an id** (short physical typing), inspect the fresh focused URL field for the exact address, and only then press Return and verify the destination. This path is covered through the registered basic-ON tools, not an undeclared legacy typing tool, browser debug API, HTTP replacement or host GUI.
+
+Firefox exposes its URL field as an editable **combo box**. The native paste gate now recognizes this as a candidate, but still requires live focused/editable/enabled/showing state plus the EditableText interface. Noneditable choice combos, password fields, conflicting focused fields and stale targets remain blocked. Editable-combo values can be read semantically for verification.
+
+**Known Firefox limitation:** in separate fresh fixture runs, clipboard paste and id-based SetTextContents returned dispatch/acceptance but left this Firefox address bar empty. They are not treated as proven insertion, and are not the default short-ASCII URL-entry method. The successful regression uses the no-id physical path with exact independent readback before Return. There is no automatic replay/fallback after an uncertain earlier input; the agent must verify the current field first. Long/Unicode URL entry and every browser/site combination are not claimed universally verified. MFA/CAPTCHA still require the human.
+
 ## One browser and one profile for all Pi chats
 
 There is **one common managed browser and one common persistent Docker profile** for the host user/private state directory, not a new volume per Pi conversation. Different chats see the same tabs, cookies and logins. Explicit use can reconnect after another chat recreated the browser; ordinary tool calls cannot silently adopt a changed socket/container.
@@ -96,10 +104,13 @@ RUN_BROWSER_USE_REAL=1 node tests/test-browser-use-real.mjs
 RUN_BROWSER_DOCKER_REAL=1 node tests/test-browser-docker-real.mjs
 RUN_BROWSER_PROFILE_MIGRATION_REAL=1 node tests/test-browser-profile-migration-real.mjs
 RUN_BROWSER_TABS_REAL=1 node tests/test-browser-tabs-real.mjs
+RUN_BROWSER_NAVIGATION_REAL=1 node tests/test-browser-navigation-real.mjs
 ```
 
 Completed: real high-level use/reuse/pause/off/start with no repeated image build; passwordless RFB; Firefox native semantic click; sticky Stop and daemon-only resume; dummy persistent cookie surviving full restart and removal/recreation; synthetic v1 profile migration/adoption and recreation visible to two Pi session identities. Test-owned containers/networks/volumes/temp files and fixture images were removed. The live real-user legacy browser was not stopped/migrated or read for profile contents.
 
 The viewer/tab-restoration follow-up also passed: two synthetic tabs survived container removal/recreation and a full restart without duplicates; native tab selection plus exact active-window titles verified both pages when compact AT-SPI omitted tab nodes. Repeated RFB connect/disconnect and a further 68-second private stability interval kept the viewer/browser running. Loopback protocol fixtures reject HTTP-only readiness, backend disconnects, password-only negotiation and malformed replies. The current user profile was not read or modified by development checks.
+
+The URL follow-up verified basic-ON tool declarations, short ASCII address entry including percent-encoding/punctuation, exact live AT-SPI readback before Return, native Firefox navigation to the expected synthetic loopback route, and refusal of paste into a sole-focused noneditable choice combo. A native guard test also rejects conflicting focused editable candidates even with an explicit target. Separate opt-in paste/id-setter diagnostics remain documented failures, not successful navigation tests. No real TikTok page, user account or user browser was changed by these development checks.
 
 These are scripted integration checks, not live agent/provider, security-containment or performance benchmarks. No host GUI, screenshots, real accounts or public-site tasks were used. Real tests previously found Docker tmpfs-copy limitations, Firefox onboarding/accessibility bootstrap and PID pressure; the implementation keeps Firefox's sandbox enabled and uses fixed exec streaming for migration.

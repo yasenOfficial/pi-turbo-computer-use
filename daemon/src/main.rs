@@ -1055,13 +1055,22 @@ fn matches_condition(nodes: &[Node], condition: &WaitCondition) -> bool {
 // field focus. A fresh, known focused control (even alongside a stale focused
 // text marker) contradicts it; an active window title cannot override that.
 fn reject_known_noneditable_paste_focus(nodes: &[Node]) -> Result<()> {
+    let mut fields = 0;
     for node in nodes.iter().filter(|n| n.focused == Some(true)) {
+        if matches!(node.role.as_str(), "entry" | "text" | "combo box") {
+            fields += 1;
+            // Applies even with an explicit target: a second focused choice
+            // or text field contradicts which control will receive Ctrl+V.
+            if fields > 1 {
+                bail!("ambiguous focused paste target");
+            }
+        }
         if node.role == "password text" {
             bail!("focused password field cannot receive clipboard paste");
         }
         if !matches!(
             node.role.as_str(),
-            "entry" | "text" // validated via live AT-SPI GetState below
+            "entry" | "text" | "combo box" // validated via live AT-SPI GetState/EditableText below
                 | "application" | "frame" | "window" | "dialog" | "panel"
                 | "grouping" | "scroll pane" | "root pane" | "layered pane"
                 | "viewport" | "document frame" | "document web"
@@ -1115,9 +1124,9 @@ impl Daemon {
         let id = if let Some(target) = target {
             Some(resolve_target(nodes, target)?)
         } else {
-            let mut focused = nodes
-                .iter()
-                .filter(|n| n.focused == Some(true) && matches!(n.role.as_str(), "entry" | "text"));
+            let mut focused = nodes.iter().filter(|n| {
+                n.focused == Some(true) && matches!(n.role.as_str(), "entry" | "text" | "combo box")
+            });
             let id = focused.next().map(|n| n.id.clone());
             if focused.next().is_some() {
                 bail!("ambiguous focused paste target");
@@ -1129,7 +1138,7 @@ impl Daemon {
                 .iter()
                 .find(|n| n.id == id)
                 .context("paste target vanished")?;
-            if !matches!(node.role.as_str(), "entry" | "text") {
+            if !matches!(node.role.as_str(), "entry" | "text" | "combo box") {
                 bail!("paste target must be a non-password text field");
             }
             let backend = self
@@ -2265,7 +2274,6 @@ mod tests {
             "menu item",
             "link",
             "tree item",
-            "combo box",
             "table",
             "slider",
             "check box",
@@ -2290,8 +2298,30 @@ mod tests {
                     .is_ok()
             );
         }
+        // A focused combo is only a candidate: verify_paste_target must still
+        // obtain live FOCUSED/EDITABLE/ENABLED/SHOWING and EditableText.
+        assert!(
+            reject_known_noneditable_paste_focus(&[node("address", "combo box", Some(true))])
+                .is_ok()
+        );
+        for roles in [
+            ["entry", "combo box"],
+            ["combo box", "entry"],
+            ["entry", "entry"],
+            ["combo box", "combo box"],
+        ] {
+            assert!(
+                reject_known_noneditable_paste_focus(&[
+                    node("first", roles[0], Some(true)),
+                    node("second", roles[1], Some(true)),
+                ])
+                .is_err(),
+                "conflicting focused fields: {roles:?}"
+            );
+        }
         assert!(reject_known_noneditable_paste_focus(&[
             node("entry", "entry", Some(true)),
+            node("background", "combo box", Some(false)),
             node("frame", "frame", Some(true))
         ])
         .is_ok());
