@@ -8,7 +8,7 @@ const IMAGE_ID = `sha256:${'a'.repeat(64)}`;
 const CID = 'b'.repeat(64), NID = 'c'.repeat(64);
 const owner = 'org.pi-computer.browser';
 function fake() {
-  const calls = [], image = { Id: IMAGE_ID, Config: { Labels: { [owner]: 'v1' }, User: `${process.getuid()}:${process.getuid()}`, Entrypoint: ['/usr/local/bin/browser-entrypoint'] } }; 
+  const calls = [], image = { Id: IMAGE_ID, Config: { Labels: { [owner]: 'v1' }, User: `${process.getuid()}:${process.getuid()}`, Entrypoint: ['/usr/local/bin/browser-entrypoint'] } };
   let state, network, container;
   const run = async args => {
     calls.push(args);
