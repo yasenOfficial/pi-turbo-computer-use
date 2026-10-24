@@ -7,7 +7,7 @@ Use the existing Pi session and its normal `desktop_*` tools, without managing D
 /browser use off
 ```
 
-**`/browser use`** selects the isolated Docker target, prepares the image if missing/outdated, reuses or starts the browser, migrates a verified old temporary profile if needed, checks the daemon and localhost viewer, turns Computer use ON, and shows the viewer link. No separate build, status, migrate or ON command is required. First preparation can take several minutes; ordinary subsequent use reuses the image. Errors remain OFF and never fall back to the host desktop.
+**`/browser use`** selects the isolated Docker target, prepares the image if missing/outdated, reuses or starts the browser, migrates a verified old temporary profile if needed, checks the daemon, noVNC page **and actual passwordless RFB backend through its WebSocket proxy**, turns Computer use ON, and shows the current viewer link. No separate build, status, migrate or ON command is required. First preparation can take several minutes; ordinary subsequent use reuses the image. Errors remain OFF and never fall back to the host desktop.
 
 **`/browser use off`** immediately turns mode OFF and aborts this Pi run, stops input in the owned browser, removes its container/network, and retains the common profile. It also handles an already-stopped container. If an old temporary profile needs migration before removal, it is preserved automatically rather than discarded. The command reports success only after verified cleanup; unsafe/uncertain states remain blocked instead of deleting data blindly.
 
@@ -33,9 +33,11 @@ There is **one common managed browser and one common persistent Docker profile**
 
 An atomic private control claim prevents two Pi chats from automating the shared browser concurrently. It is held across a whole agent run, including model thinking, and released after workflow cleanup. Commands that change/start/stop the browser also acquire the claim. A second active controller gets a busy message rather than interleaving input. Emergency Stop remains shared. **Stopping the common browser affects all chats**, not just the one issuing OFF.
 
-The common profile survives full container restart, removal/recreation and host reboot. Cookies, site storage, bookmarks and browser settings are retained; a website can still expire/revoke its session, and private-browsing/session-only cookies need not survive normal browser shutdown. This is persistent profile storage, not a guarantee that every site remains signed in.
+The common profile survives full container restart, removal/recreation and host reboot. **Firefox restores its previous normal windows/tabs** instead of forcing a fresh blank tab; cookies, site storage, bookmarks and browser settings are retained; a website can still expire/revoke its session, and private-browsing/session-only cookies need not survive normal browser shutdown. This is persistent profile storage, not a guarantee that every site remains signed in.
 
-Ordinary Downloads and the rest of the tmpfs home remain temporary. There is no host-profile import or download-export feature. The volume has no disk quota and is not automatically encrypted or backed up. Normal OFF/stop **never deletes the profile volume**. Deliberately deleting that Docker volume separately erases its saved sessions and data.
+Ordinary Downloads and the rest of the tmpfs home remain temporary. There is no host-profile import or download-export feature. During normal OFF/upgrade shutdown, the private supervisor first sends a fixed X11 `WM_DELETE_WINDOW` request only to verified Firefox windows and waits for session data to flush before stopping its display/D-Bus. This is internal lifecycle shutdown, not a model-callable keyboard/mouse tool. Bounded signal fallback reports a fixed warning if normal close fails; a crash/force kill can still lose the most recent changes or require Firefox recovery. Private windows are not a persistent session.
+
+The volume has no disk quota and is not automatically encrypted or backed up. Normal OFF/stop **never deletes the profile volume**. Deliberately deleting that Docker volume separately erases its saved sessions and data.
 
 ## Automatic upgrades without losing an old profile
 
@@ -69,6 +71,8 @@ Treat the entire profile volume as sensitive: it may contain live cookies, saved
 
 If an older extension reported **“Shared browser control is unavailable”** immediately after an update, its native `.mjs` runtime could have remained cached across Pi `/reload`. The extension now loads that module by its on-disk source hash on each factory load. Run `/reload` once after this fix, then `/browser use`; no container/profile deletion, cache clearing, Pi restart or Docker rebuild is required for this loader fix. A real Pi same-process reload regression verifies that changed control methods are actually refreshed, not just that the command exists.
 
+If a viewer link says **failed to connect**, run `/browser use` again and use the link it reports: removal/recreation can allocate a different port. A noVNC HTML page alone does not establish that its VNC backend is alive; the command now checks a real read-only RFB handshake (no framebuffer updates or GUI input) before reporting readiness. There is no background automatic input retry or silent host fallback. Fixed child-role/exit-status diagnostics help distinguish daemon, Firefox, VNC and proxy failures without logging page titles/URLs or profile data. The reported `32811` incident was an exited container with a refused TCP port; its original child-exit cause could not be recovered from the old suppressed diagnostics.
+
 A killed build can leave a lifecycle lock; a crashed Pi process can leave a control claim. Such uncertain claims are not stolen automatically. Verify the prior owner/operation ended before tightly scoped manual recovery. An uncertain Docker create ID is not adopted by name. No broad prune or unrelated container removal is used.
 
 ## Verification
@@ -80,6 +84,7 @@ node tests/test-browser-docker-runtime.mjs
 node tests/test-browser-use.mjs
 node tests/test-docker-browser-target.mjs
 node tests/test-browser-runtime-reload.mjs
+node tests/test-browser-viewer-health.mjs
 ```
 
 They cover cached preparation, shared profile/ownership adoption, competing control claims, explicit ON/OFF, cancellation during build/start, legacy upgrade, image replacement, pause/resume, socket substitution and no host fallback.
@@ -90,8 +95,11 @@ Opt-in real integration, always using private fixture state/runtime roots so the
 RUN_BROWSER_USE_REAL=1 node tests/test-browser-use-real.mjs
 RUN_BROWSER_DOCKER_REAL=1 node tests/test-browser-docker-real.mjs
 RUN_BROWSER_PROFILE_MIGRATION_REAL=1 node tests/test-browser-profile-migration-real.mjs
+RUN_BROWSER_TABS_REAL=1 node tests/test-browser-tabs-real.mjs
 ```
 
 Completed: real high-level use/reuse/pause/off/start with no repeated image build; passwordless RFB; Firefox native semantic click; sticky Stop and daemon-only resume; dummy persistent cookie surviving full restart and removal/recreation; synthetic v1 profile migration/adoption and recreation visible to two Pi session identities. Test-owned containers/networks/volumes/temp files and fixture images were removed. The live real-user legacy browser was not stopped/migrated or read for profile contents.
+
+The viewer/tab-restoration follow-up also passed: two synthetic tabs survived container removal/recreation and a full restart without duplicates; native tab selection plus exact active-window titles verified both pages when compact AT-SPI omitted tab nodes. Repeated RFB connect/disconnect and a further 68-second private stability interval kept the viewer/browser running. Loopback protocol fixtures reject HTTP-only readiness, backend disconnects, password-only negotiation and malformed replies. The current user profile was not read or modified by development checks.
 
 These are scripted integration checks, not live agent/provider, security-containment or performance benchmarks. No host GUI, screenshots, real accounts or public-site tasks were used. Real tests previously found Docker tmpfs-copy limitations, Firefox onboarding/accessibility bootstrap and PID pressure; the implementation keeps Firefox's sandbox enabled and uses fixed exec streaming for migration.

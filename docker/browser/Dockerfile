@@ -23,9 +23,10 @@ RUN groupadd --gid "$BROWSER_UID" browser && \
 COPY --from=builder /usr/local/bin/pi-turbo-daemon /usr/local/bin/pi-turbo-daemon
 COPY docker/browser/entrypoint.sh /usr/local/bin/browser-entrypoint
 COPY docker/browser/session.sh /usr/local/bin/browser-session
+COPY docker/browser/close.py /usr/local/bin/browser-close
 COPY docker/browser/daemon-control.sh /usr/local/bin/browser-daemon-control
 COPY docker/browser/profile-import.sh /usr/local/bin/browser-profile-import
-RUN chmod 0755 /usr/local/bin/browser-entrypoint /usr/local/bin/browser-session /usr/local/bin/browser-daemon-control /usr/local/bin/browser-profile-import
+RUN chmod 0755 /usr/local/bin/browser-entrypoint /usr/local/bin/browser-session /usr/local/bin/browser-close /usr/local/bin/browser-daemon-control /usr/local/bin/browser-profile-import
 LABEL org.pi-computer.browser.schema="persistent-noauth-v2"
 ENV DISPLAY=:99 HOME=/home/browser XDG_RUNTIME_DIR=/run/user/browser XDG_SESSION_TYPE=x11 MOZ_ENABLE_WAYLAND=0 MOZ_ACCESSIBILITY_ENABLED=1 NO_AT_BRIDGE=0 GTK_MODULES=gail:atk-bridge GNOME_ACCESSIBILITY=1 ACCESSIBILITY_ENABLED=1 GSETTINGS_BACKEND=memory GTK_USE_PORTAL=0 TOKIO_WORKER_THREADS=2
 USER ${BROWSER_UID}:${BROWSER_UID}

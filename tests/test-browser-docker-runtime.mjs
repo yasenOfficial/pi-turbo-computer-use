@@ -126,6 +126,7 @@ test('import is inert; explicit build, isolated run, reload, viewer and retained
     ['exec', '--user', `${process.getuid()}:${process.getuid()}`, CID, '/usr/local/bin/browser-daemon-control', 'restart']);
   await fresh.stop();
   assert.deepEqual(await fresh.status(), { status: 'absent' });
+  assert.deepEqual(mock.calls.find(a => a[0] === 'stop'), ['stop', '--time', '30', CID]);
   assert.equal(mock.calls.filter(a => a[0] === 'rm').length, 1);
   assert.equal(mock.calls.filter(a => a[0] === 'network' && a[1] === 'rm').length, 1);
   assert.equal(mock.calls.filter(a => a[0] === 'volume' && a[1] === 'rm').length, 0);
@@ -249,7 +250,7 @@ test('prepare builds only for missing, stale or unpinned sources; returns non-se
   await fs.mkdir(path.join(root, 'docker/browser'), { recursive: true });
   for (const name of ['Cargo.toml', 'Cargo.lock', 'build.rs'])
     await fs.writeFile(path.join(root, 'daemon', name), `fixture-${name}`);
-  for (const name of ['Dockerfile', 'entrypoint.sh', 'session.sh', 'daemon-control.sh', 'profile-import.sh'])
+  for (const name of ['Dockerfile', 'entrypoint.sh', 'session.sh', 'daemon-control.sh', 'profile-import.sh', 'close.py'])
     await fs.writeFile(path.join(root, 'docker/browser', name), `fixture-${name}`);
   await fs.writeFile(path.join(root, 'daemon/src/nested/main.rs'), 'fn main() {}');
   const runtime = reload({ repositoryRoot: root });
@@ -276,7 +277,7 @@ test('prepare never pins sources that change during build', async () => fixture(
   await fs.mkdir(path.join(root, 'docker/browser'), { recursive: true });
   for (const name of ['Cargo.toml', 'Cargo.lock', 'build.rs'])
     await fs.writeFile(path.join(root, 'daemon', name), `fixture-${name}`);
-  for (const name of ['Dockerfile', 'entrypoint.sh', 'session.sh', 'daemon-control.sh', 'profile-import.sh'])
+  for (const name of ['Dockerfile', 'entrypoint.sh', 'session.sh', 'daemon-control.sh', 'profile-import.sh', 'close.py'])
     await fs.writeFile(path.join(root, 'docker/browser', name), `fixture-${name}`);
   const source = path.join(root, 'daemon/src/main.rs');
   await fs.writeFile(source, 'fn main() {}');
@@ -555,6 +556,29 @@ test('private AT-SPI activation precedes Firefox and uses the dedicated profile'
     assert.ok(entrypoint.includes(`user_pref("${preference}"`), preference);
   }
   assert.match(entrypoint, /\$HOME\/profile\/user\.js/);
+  assert.match(entrypoint, /user_pref\("browser\.startup\.page", 3\)/);
+  assert.match(entrypoint, /user_pref\("browser\.sessionstore\.resume_from_crash", true\)/);
+  assert.match(entrypoint, /browser\.sessionstore\.max_resumed_crashes/);
+  assert.match(entrypoint, /trap shutdown TERM INT/);
+  assert.match(entrypoint, /kill -TERM "\$pid"/);
+  assert.match(entrypoint, /wait "\$buspid"\s*$/m);
+  assert.ok(!entrypoint.includes('wait "$buspid" || :\n'));
+  assert.match(session, /trap 'exit 0' TERM INT/);
+  assert.ok(!dockerfile.includes('xdotool'));
+  assert.match(dockerfile, /COPY docker\/browser\/close\.py \/usr\/local\/bin\/browser-close/);
+  assert.match(session, /\/usr\/local\/bin\/browser-close/);
+  assert.ok(session.indexOf('/usr/local/bin/browser-close') < session.indexOf('kill -TERM "$fp"'));
+  const close = await fs.readFile(path.join(root, 'docker/browser/close.py'), 'utf8');
+  assert.match(close, /os\.environ\.get\("DISPLAY"\) != ":99"/);
+  assert.match(close, /_NET_CLIENT_LIST/);
+  assert.match(close, /WM_DELETE_WINDOW/);
+  assert.match(close, /\/usr\/lib\/firefox-esr\/firefox-esr/);
+  assert.ok(!close.includes('XTestFake') && !close.includes('XWarpPointer'));
+  assert.match(session, /for attempt in \{1\.\.120\}/);
+  assert.match(session, /Firefox did not exit within grace period/);
+  assert.match(session, /browser-session: %s exited/);
+  assert.match(session, /firefox-esr --no-remote --profile "\$HOME\/profile" >/);
+  assert.ok(!session.includes('"$HOME/profile" about:blank'));
   assert.ok(!entrypoint.includes('viewer-password'));
   assert.match(session, /-nopw/);
   assert.ok(!session.includes('-passwdfile'));

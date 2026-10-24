@@ -17,7 +17,7 @@ const digest = value => createHash('sha256').update(value).digest('hex');
 const FINGERPRINT = /^[0-9a-f]{64}$/;
 const BUILD_FILES = ['daemon/Cargo.toml', 'daemon/Cargo.lock', 'daemon/build.rs',
   'docker/browser/Dockerfile', 'docker/browser/entrypoint.sh', 'docker/browser/session.sh',
-  'docker/browser/daemon-control.sh', 'docker/browser/profile-import.sh'];
+  'docker/browser/daemon-control.sh', 'docker/browser/profile-import.sh', 'docker/browser/close.py'];
 async function sourceFingerprint(root) {
   const files = [...BUILD_FILES];
   const collect = async (dir, relative) => {
@@ -117,7 +117,7 @@ async function dockerCommand(args, { input } = {}) {
   const building = args[0] === 'build';
   try { const { stdout } = await exec('docker', args, {
     maxBuffer: building ? 32 * 1024 * 1024 : 8 * 1024 * 1024,
-    timeout: building ? 900_000 : 30_000,
+    timeout: building ? 900_000 : args[0] === 'stop' ? 60_000 : 30_000,
   }); return stdout.trim(); }
   catch (error) {
     // Docker missing objects are a normal stopped-container case; do not
@@ -538,7 +538,7 @@ export class BrowserDockerRuntime {
         }
       };
       await copySources(path.join(this.root, 'daemon/src'), path.join(stage, 'daemon/src'));
-      for (const f of ['Dockerfile', 'entrypoint.sh', 'session.sh', 'daemon-control.sh', 'profile-import.sh'])
+      for (const f of ['Dockerfile', 'entrypoint.sh', 'session.sh', 'daemon-control.sh', 'profile-import.sh', 'close.py'])
         await copyRegular(path.join(this.root, 'docker/browser', f), path.join(stage, 'docker/browser', f));
       await this.docker(['build', '--pull', '--build-arg', `BROWSER_UID=${this.uid}`, '--label', `${OWNER}=v1`, '--tag', IMAGE,
         '--file', path.join(stage, 'docker/browser/Dockerfile'), stage]);
@@ -681,7 +681,7 @@ export class BrowserDockerRuntime {
     } else {
       const checked = await this.#checked(s);
       if (checked) {
-        if (checked.info.State?.Running) await this.docker(['stop', '--time', '10', s.containerId]);
+        if (checked.info.State?.Running) await this.docker(['stop', '--time', '30', s.containerId]);
         await this.docker(['rm', s.containerId]);
       }
       await this.#network(s);

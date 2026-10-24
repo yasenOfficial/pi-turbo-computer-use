@@ -16,23 +16,92 @@ type Target = "host" | "docker";
 type Handle = { socketPath: string; id: string; containerId: string; name: string };
 type Runtime = Pick<BrowserDockerRuntime, "build" | "prepare" | "start" | "status" | "stop" | "viewerInfo" | "restartInput" | "migrateLegacyProfile" | "acquireControl" | "releaseControl">;
 
-/** Viewer health is only a localhost static-asset readiness check, not browser automation. */
-function checkViewer(url: string): Promise<void> {
+/** Metadata-only viewer probe: static noVNC page AND a live RFB backend
+ * through the exact localhost WebSocket proxy the viewer uses. Never requests
+ * framebuffer updates, sends pointer/keyboard events or reads saved tabs. */
+export async function checkViewer(url: string): Promise<void> {
  let viewer: URL;
  try { viewer = new URL(url); }
  catch { throw new Error("Invalid Docker viewer URL; Computer use remains OFF."); }
  if (viewer.protocol !== "http:" || viewer.hostname !== "127.0.0.1" || !/^\/[1-9][0-9]{0,4}$/.test(`/${viewer.port}`) ||
   +viewer.port > 65535 || viewer.pathname !== "/vnc.html" || viewer.username || viewer.password || viewer.search || viewer.hash)
   throw new Error("Unsafe Docker viewer URL; Computer use remains OFF.");
- return new Promise((resolve, reject) => {
+ await new Promise<void>((resolve, reject) => {
   const request = httpRequest(viewer, { method: "GET", timeout: 3000 }, response => {
    response.resume();
    if (response.statusCode === 200) resolve();
-   else reject(new Error("Docker viewer is not ready; Computer use remains OFF."));
+   else reject(new Error("Docker viewer page is unavailable; Computer use remains OFF."));
   });
-  request.once("timeout", () => request.destroy(new Error("Docker viewer readiness timed out; Computer use remains OFF.")));
-  request.once("error", () => reject(new Error("Docker viewer is unavailable; Computer use remains OFF.")));
+  request.once("timeout", () => request.destroy(new Error("Docker viewer page timed out; Computer use remains OFF.")));
+  request.once("error", () => reject(new Error("Docker viewer page is unavailable; Computer use remains OFF.")));
   request.end();
+ });
+ const proxy = new URL("/websockify", viewer);
+ proxy.protocol = "ws:";
+ await new Promise<void>((resolve, reject) => {
+  // The Pi runtime requires Node >=22.19, which provides a native WebSocket.
+  // No third-party transport, host GUI or Docker IPC is used by this probe.
+  const socket = new WebSocket(proxy.href, ["binary"]);
+  socket.binaryType = "arraybuffer";
+  let pending = Buffer.alloc(0);
+  let state: "version" | "count" | "types" | "result" | "init" | "name" = "version";
+  let typeCount = 0, nameLength = 0, settled = false;
+  const failure = () => new Error("Docker viewer proxy/VNC backend is unavailable; Computer use remains OFF.");
+  const finish = (ok: boolean) => {
+   if (settled) return;
+   settled = true;
+   clearTimeout(deadline);
+   socket.removeEventListener("message", onMessage);
+   socket.removeEventListener("error", onFailure);
+   socket.removeEventListener("close", onFailure);
+   // close() cannot cancel a CONNECTING native WebSocket; close on its late
+   // opening too, so a timed-out probe cannot leave a live RFB connection.
+   if (socket.readyState === WebSocket.CONNECTING)
+    socket.addEventListener("open", () => socket.close(), { once: true });
+   else if (socket.readyState === WebSocket.OPEN) socket.close();
+   if (ok) resolve(); else reject(failure());
+  };
+  const onFailure = () => finish(false);
+  const onMessage = (event: MessageEvent) => {
+   if (!(event.data instanceof ArrayBuffer) || settled || pending.length + event.data.byteLength > 4096) { finish(false); return; }
+   pending = Buffer.concat([pending, Buffer.from(event.data)]);
+   try {
+    while (!settled) {
+     if (state === "version") {
+      if (pending.length < 12) return;
+      if (pending.subarray(0, 12).toString("ascii") !== "RFB 003.008\n") { finish(false); return; }
+      pending = pending.subarray(12); socket.send(Buffer.from("RFB 003.008\n", "ascii")); state = "count";
+     } else if (state === "count") {
+      if (!pending.length) return;
+      typeCount = pending[0]; pending = pending.subarray(1);
+      if (!typeCount) { finish(false); return; }
+      state = "types";
+     } else if (state === "types") {
+      if (pending.length < typeCount) return;
+      // This browser is deliberately passwordless. Never negotiate VNC auth.
+      if (!pending.subarray(0, typeCount).includes(1)) { finish(false); return; }
+      pending = pending.subarray(typeCount); socket.send(Uint8Array.of(1)); state = "result";
+     } else if (state === "result") {
+      if (pending.length < 4) return;
+      if (pending.readUInt32BE(0) !== 0) { finish(false); return; }
+      pending = pending.subarray(4); socket.send(Uint8Array.of(1)); state = "init";
+     } else if (state === "init") {
+      if (pending.length < 24) return;
+      if (!pending.readUInt16BE(0) || !pending.readUInt16BE(2)) { finish(false); return; }
+      nameLength = pending.readUInt32BE(20);
+      if (nameLength > 1024) { finish(false); return; }
+      pending = pending.subarray(24); state = "name";
+     } else {
+      if (pending.length < nameLength) return;
+      finish(true); return;
+     }
+    }
+   } catch { finish(false); }
+  };
+  const deadline = setTimeout(onFailure, 3000);
+  socket.addEventListener("message", onMessage);
+  socket.addEventListener("error", onFailure);
+  socket.addEventListener("close", onFailure);
  });
 }
 
@@ -384,7 +453,7 @@ export class DesktopTarget {
    try { await this.viewerHealth(url); check(); return; }
    catch {
     check();
-    if (Date.now() >= end) throw new Error("Docker localhost viewer did not become ready within 5 seconds; Computer use remains OFF.");
+    if (Date.now() >= end) throw new Error("Docker localhost viewer page or VNC backend did not become ready within 5 seconds; Computer use remains OFF. Retry explicitly with /browser use.");
     await new Promise(resolve => setTimeout(resolve, Math.min(200, end - Date.now())));
    }
   }

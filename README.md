@@ -92,9 +92,9 @@ For a user-only blocker, the agent calls `desktop_request_user`, explains the co
 /browser use off                   Stop it; retain the shared profile and logins
 ```
 
-That's the normal workflow—no manual Docker build/start/migrate/status/ON sequence. The command handles image preparation, verified legacy migration and reuse, and shows the localhost viewer link automatically. Open it in your normal browser; no password is used. For manual takeover: `/browser use pause`, wait for confirmed Stop, then `/browser use` to resume. The first preparation can take several minutes.
+That's the normal workflow—no manual Docker build/start/migrate/status/ON sequence. The command handles image preparation, verified legacy migration and reuse, checks the real proxy/VNC connection (not only its HTML page), and shows the current localhost viewer link automatically. After recreation, the port may change—use the newly reported link. Open it in your normal browser; no password is used. For manual takeover: `/browser use pause`, wait for confirmed Stop, then `/browser use` to resume. The first preparation can take several minutes.
 
-**One browser and one persistent profile are shared across all Pi chats.** An exclusive per-run control claim prevents competing chats from interleaving automation. OFF stops the common browser for all chats. Cookies/site data survive restart/removal; websites may still expire sessions. Downloads outside the profile remain temporary. No live profile is migrated by installation/testing; explicit `/browser use` handles a uniquely verified old profile safely.
+**One browser and one persistent profile are shared across all Pi chats.** An exclusive per-run control claim prevents competing chats from interleaving automation. OFF stops the common browser for all chats. Cookies/site data and normal Firefox tabs survive restart/removal; websites may still expire sessions. Shutdown requests a normal private-display Firefox close before ending the virtual screen so it can save the tab session. Downloads outside the profile remain temporary. No live profile is migrated by installation/testing; explicit `/browser use` handles a uniquely verified old profile safely.
 
 **Localhost is not authentication:** other local clients reaching the port can control the logged-in browser. Never expose/forward it publicly. No host display/D-Bus/Docker socket, home or personal browser profile is mounted. Docker has outbound bridge networking, not network isolation; Pi's ordinary bash/file tools remain on the host. Reload/shutdown leave the browser running until explicit OFF. The old `/computer-use docker …` commands remain only for advanced diagnostics. [Guide and limits](docs/DOCKER-BROWSER.md).
 
@@ -235,6 +235,7 @@ node tests/test-browser-docker-runtime.mjs
 node tests/test-browser-use.mjs
 node tests/test-docker-browser-target.mjs
 node tests/test-browser-runtime-reload.mjs
+node tests/test-browser-viewer-health.mjs
 ```
 
 Node integration tests require the compatible Pi SDK. They prefer `PI_CODING_AGENT_PACKAGE` (path to its `package.json`) or `PI_CODEX_ULTRA_RELEASE_ROOT`; otherwise they search the local Pi Codex Ultra release installation. Core notification tests inject subprocess mocks and do not send real notifications. GUI test scripts are optional and described separately; inspect their scope before running them. GitHub CI runs native Rust checks without controlling a user's desktop.
