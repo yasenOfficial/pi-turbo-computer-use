@@ -4,8 +4,13 @@ umask 077
 export DISPLAY=:99 HOME=/home/browser XDG_RUNTIME_DIR=/run/user/browser
 mkdir -p "$HOME/profile" "$HOME/Downloads" "$XDG_RUNTIME_DIR"
 chmod 0700 "$HOME" "$XDG_RUNTIME_DIR"
-# This is a new, disposable container-only Firefox profile, never a host
-# profile. Disable first-run onboarding/new-tab feeds before browser launch:
+# This dedicated, Docker-managed profile persists across container recreation;
+# it is never a host browser profile. Fail closed if a volume is misowned.
+[[ -d "$HOME/profile" && ! -L "$HOME/profile" && $(stat -c %u:%g "$HOME/profile") == "$(id -u):$(id -g)" ]] || exit 1
+chmod 0700 "$HOME/profile"
+# Never follow a profile-controlled user.js symlink onto another mount.
+if [[ -L "$HOME/profile/user.js" || ( -e "$HOME/profile/user.js" && ! -f "$HOME/profile/user.js" ) ]]; then exit 1; fi
+# Disable first-run onboarding/new-tab feeds before browser launch:
 # those can replace the intended page and invalidate live accessibility IDs.
 printf '%s\n' \
   'user_pref("accessibility.force_disabled", -1);' \
@@ -30,9 +35,4 @@ printf '%s\n' \
   'user_pref("toolkit.telemetry.enabled", false);' \
   > "$HOME/profile/user.js"
 chmod 0600 "$HOME/profile/user.js"
-# Traditional VNC password authentication uses only the first eight bytes.
-# Eight printable base64 characters give 48 bits of entropy; generating a long
-# hex string would silently provide only 32 bits. Never log or mount the secret.
-openssl rand -base64 6 > "$XDG_RUNTIME_DIR/viewer-password"
-chmod 0600 "$XDG_RUNTIME_DIR/viewer-password"
 exec dbus-run-session -- /usr/local/bin/browser-session

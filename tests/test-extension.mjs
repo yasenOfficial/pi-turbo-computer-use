@@ -257,7 +257,7 @@ try {
 	await command.handler("", ctx(true));
 	assert.match(notifications.at(-1).message, /25 registered desktop_\* tools \(3 active\)/);
 	assert.match(notifications.at(-1).message, /connectivity and input state not checked/);
-	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail", "host", "docker build", "docker start", "docker status", "docker stop", "docker pause", "docker resume"]);
+	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail", "host", "docker build", "docker start", "docker status", "docker stop", "docker pause", "docker resume", "docker migrate"]);
 	assert.deepEqual(command.getArgumentCompletions("debug ").map(({ value }) => value), ["debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
 	const debugDirectory = path.join(process.env.XDG_STATE_HOME, "pi-computer", "debug");
 	const debugPrefs = () => entries.filter(entry => entry.customType === "computer-use-debug-v1");

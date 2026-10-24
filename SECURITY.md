@@ -4,13 +4,15 @@ By default, this experimental extension acts on the real X11 desktop using the c
 
 ## Docker browser target
 
-See [Docker browser guide](docs/DOCKER-BROWSER.md). The container has no host display/D-Bus/Docker socket, home, workspace or browser-profile mount. Its only bind mount is a private, per-session IPC directory; UID, image/container/network identity, privileges, mounts and loopback port publication are checked before use. Missing/unsafe Docker state blocks calls rather than selecting the host. Host selection is explicit and idle/OFF only.
+See [Docker browser guide](docs/DOCKER-BROWSER.md). The container has no host display/D-Bus/Docker socket, home, workspace or browser-profile mount. Its only bind mount is a private, per-session IPC directory; a separate Docker-managed profile volume persists browser data. UID, image/container/network/volume identity, privileges, mounts and loopback port publication are checked before use. Missing/unsafe Docker state blocks calls rather than selecting the host. Host selection is explicit and idle/OFF only.
 
-The noVNC viewer is localhost HTTP, not a remotely hardened service. Its traditional VNC password is limited to eight random Base64 characters (48 bits); do not expose or forward the port publicly. Credentials live in container tmpfs and are shown only through explicit command UI, never model results or saved session entries. Local same-user processes remain trusted. A browser/daemon sharing this container is not a separate user-to-user boundary.
+The noVNC viewer is **localhost HTTP with no authentication**, by explicit user choice. No viewer password is generated or read. Any local process/user that can reach its port can watch/control the browser and its logged-in accounts. Never expose/forward the port publicly or rely on localhost as an authentication boundary. Docker/browser web-origin behavior is not a replacement for authentication. A browser/daemon sharing this container is not a separate user-to-user boundary.
 
 A dedicated outbound Docker bridge **can reach internet/LAN/host-gateway services**; it is not network isolation or an egress allowlist. Docker has shared-kernel/container-escape risks, and Docker-group control itself has host-level authority. Pi shell permissions are unchanged: the Docker-only desktop routing promise is not an OS sandbox for a malicious model with shell access.
 
-Pause requires an acknowledged native Stop before manual takeover; accepted events cannot be undone. Resume explicitly restarts only the stopped container daemon and leaves mode OFF. No automatic Stop reset or uncertain input replay. Browser state is ephemeral and is destroyed on explicit container removal; reload/shutdown do not remove it automatically.
+Pause requires an acknowledged native Stop before manual takeover; accepted events cannot be undone. Resume explicitly restarts only the stopped container daemon and leaves mode OFF. No automatic Stop reset or uncertain input replay. The per-session browser profile is persistent across container restart/removal; normal `stop` never deletes its volume. It can contain live cookies, saved logins and site storage, is not automatically encrypted/backed up, and has no disk quota. Other home/tmpfs data (including ordinary Downloads) remains ephemeral. New Pi sessions/forks use separate profile identities. Website expiry/private-browsing/session-only cookies can still cause sign-out.
+
+Legacy ephemeral containers require explicit `/computer-use docker migrate` while idle/OFF before removal. After acknowledged Stop, a fixed helper briefly quiesces only verified Firefox processes in the exact-owned source; profile bytes stream directly to an isolated, volume-only importer, never to logs/model context/a host archive. An EXIT trap and recovery thaw resume the source Firefox. Failed imports preserve the source and quarantine the destination; do not delete either blindly. Installation/tests do not automatically migrate live user data.
 
 ## Safety boundaries
 
@@ -34,7 +36,7 @@ Do **not** publish:
 
 - Pi conversation/session files or personal settings.
 - Browser profiles, cookies, passwords, login/MFA codes, or credential databases.
-- Daemon owner records/management tokens, Docker runtime records, or noVNC viewer passwords from private state/UI.
+- Daemon owner records/management tokens, Docker runtime/migration records, persistent browser volumes or legacy noVNC viewer passwords.
 - Unredacted desktop screenshots, accessible trees, diagnostics, or logs.
 - API/SSH tokens, private keys, `.env` files, or user workspace artifacts.
 

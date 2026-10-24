@@ -93,7 +93,7 @@ try {
 	assert.match(notices.at(-1), /25 registered desktop_\* tools/);
 	await slashCommand.handler("instructions", { ui: { notify: (text) => notices.push(text) } });
 	assert.match(notices.at(-1), /removed/);
-	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail", "host", "docker build", "docker start", "docker status", "docker stop", "docker pause", "docker resume"]);
+	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail", "host", "docker build", "docker start", "docker status", "docker stop", "docker pause", "docker resume", "docker migrate"]);
 	const debugDirectory = path.join(process.env.XDG_STATE_HOME, "pi-computer", "debug");
 	const debugPrefs = () => session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-debug-v1");
 	assert.equal(existsSync(debugDirectory), false, "real extension load never creates a debug directory");

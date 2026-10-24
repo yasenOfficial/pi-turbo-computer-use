@@ -37,7 +37,9 @@ for property in IsEnabled ScreenReaderEnabled; do
     --method org.freedesktop.DBus.Properties.Set org.a11y.Status "$property" '<true>' \
     >/dev/null 2>&1
 done
-x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -passwdfile "$XDG_RUNTIME_DIR/viewer-password" -quiet >/dev/null 2>&1 & vp=$!
+# No VNC password: the viewer is explicitly unauthenticated. Docker publishes
+# 6080 on host 127.0.0.1 only; VNC itself is container-loopback only.
+x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -nopw -quiet >/dev/null 2>&1 & vp=$!
 websockify --web=/usr/share/novnc 0.0.0.0:6080 127.0.0.1:5900 >/dev/null 2>&1 & wp=$!
 firefox-esr --no-remote --profile "$HOME/profile" about:blank >/dev/null 2>&1 & fp=$!
 # Other child exits are terminal. Only an explicit supervisor signal permits

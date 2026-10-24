@@ -55,14 +55,23 @@ try {
  const mode = new ComputerUseMode(harness.pi, async () => true);
  let target; const workflow = new DesktopWorkflow(req => target.lease(req, ctx), 600_000);
  const handle = { id: 'fixture', name: 'fixture', containerId: 'fixture-id', socketPath: socket };
- let state = 'absent', starts = 0, stops = 0, resumes = 0, credentials = 0, builds = 0;
- const runtime = { async status() { return state === 'running' ? { status: state, handle } : { status: state }; },
-  async start() { if (state !== 'absent') throw Error('stop first'); state = 'running'; daemonStopped = false; starts++; return handle; },
+ let state = 'absent', starts = 0, stops = 0, resumes = 0, viewerReads = 0, builds = 0, migrations = 0;
+ let legacyViewer = false, migrationComplete = false, profileRetained = false;
+ const runtime = { async status() { return state === 'running'
+  ? { status: state, handle, authentication: legacyViewer ? 'legacy-password' : 'none', ...(legacyViewer ? { requiresRecreate: true } : {}) }
+  : { status: state }; },
+  async start() { if (state !== 'absent') throw Error('stop first'); state = 'running'; daemonStopped = false;
+   if (migrationComplete) legacyViewer = false; starts++; return handle; },
   async restartInput() { assert.equal(state, 'running'); assert.equal(daemonStopped, true);
    resumes++; daemonStopped = false; staleStopInfo = 1; },
-  async stop() { state = 'absent'; stops++; },
+  async migrateLegacyProfile() { assert.equal(state, 'running'); assert.equal(legacyViewer, true);
+   assert.equal(daemonStopped, true, 'legacy daemon Stop must be acknowledged before any archive transfer');
+   migrations++; migrationComplete = true; profileRetained = true; return { message: 'Private profile copied' }; },
+  async stop() { if (legacyViewer && !migrationComplete) throw Error('Unmigrated legacy profile');
+   state = 'absent'; stops++; },
   async build() { builds++; return { message: 'built', imageId: 'fixture' }; },
-  async viewerCredentials() { credentials++; return { url: 'http://127.0.0.1:6080/vnc.html', password: 'PRIVATE-FIXTURE' }; } };
+  async viewerInfo() { viewerReads++; return { url: 'http://127.0.0.1:6080/vnc.html',
+   authentication: legacyViewer ? 'legacy-password' : 'none', ...(legacyViewer ? { requiresRecreate: true } : {}) }; } };
  target = new DesktopTarget(harness.pi, mode, workflow, id => { assert.equal(id, sessionId); return runtime; });
  registerComputerUseTools(harness.pi, workflow, undefined, target);
  registerComputerUseCommand(harness.pi, mode, undefined, undefined, undefined, target);
@@ -71,9 +80,20 @@ try {
  assert.equal(mode.isEnabled(), false); assert.equal(target.target, 'host');
  assert.equal(builds, 0); assert.equal(starts, 0);
  await cmd('docker build'); assert.equal(builds, 1); assert.equal(target.target, 'host');
- await cmd('docker start'); assert.equal(target.target, 'docker'); assert.equal(mode.isEnabled(), false);
+ const started = await cmd('docker start'); assert.equal(target.target, 'docker'); assert.equal(mode.isEnabled(), false);
+ assert.match(started, /Passwordless localhost viewer.*same private browser profile is reused/);
  assert.equal(starts, 1); assert.ok(seen.every(r => r.cmd === 'daemon_info'), 'startup only performs metadata handshake');
- const password = await cmd('docker status'); assert.match(password, /PRIVATE-FIXTURE/);
+ const viewerStatus = await cmd('docker status');
+ assert.match(viewerStatus, /Viewer \(localhost only, no password\): http:\/\/127\.0\.0\.1:6080\/vnc\.html/);
+ assert.match(viewerStatus, /profile is retained across stop\/start/);
+ assert.doesNotMatch(viewerStatus, /Viewer password:/);
+ const readsBeforeHeadless = viewerReads;
+ const headlessNotices = [];
+ await harness.commands.get('computer-use').handler('docker status', { ...ctx, hasUI: false,
+  ui: { ...ctx.ui, notify: message => headlessNotices.push(message) } });
+ assert.match(headlessNotices.at(-1), /Viewer URL requires user UI/);
+ assert.doesNotMatch(headlessNotices.at(-1), /127\.0\.0\.1:6080|password:/);
+ assert.equal(viewerReads, readsBeforeHeadless, 'noninteractive status does not request viewer metadata');
  // Even when runtime.status() claims the same running container, final IPC
  // paths must be real private sockets, not host-socket symlinks/regular files.
  const beforeUnsafe = seen.length;
@@ -84,7 +104,7 @@ try {
  await unlink(socket);
  await new Promise(resolve => server.listen(socket, resolve));
  await chmod(socket, 0o600);
- assert.ok(!JSON.stringify(harness.entries).includes('PRIVATE-FIXTURE'), 'password never persisted');
+ assert.ok(!JSON.stringify(harness.entries).includes('password'), 'viewer authentication never persisted');
  assert.match(await cmd('docker resume'), /not stopped/);
  assert.equal(resumes, 0, 'resume never restarts live input');
  await cmd('on'); assert.equal(mode.isEnabled(), true);
@@ -180,15 +200,74 @@ try {
  stopAcknowledged = true;
  assert.match(await cmd('docker resume'), /remains OFF/);
  assert.equal(resumes, 3);
- await cmd('docker stop'); assert.equal(stops, 1); assert.equal(target.target, 'docker');
+ assert.match(await cmd('docker stop'), /profile is retained/); assert.equal(stops, 1); assert.equal(target.target, 'docker');
  assert.match(await cmd('on'), /stopped/); assert.equal(mode.isEnabled(), false);
  await assert.rejects(tools.get('desktop_ping').execute('ping', {}, undefined, undefined, ctx), /not running/);
  assert.equal(seen.filter(r => r.cmd === 'ping').length, 2, 'unavailable Docker never pings host');
- await cmd('docker start'); assert.equal(starts, 2);
+ assert.match(await cmd('docker start'), /same private browser profile is reused/); assert.equal(starts, 2);
  await cmd('on'); assert.equal(mode.isEnabled(), true, 'new explicitly started browser resets Docker Stop');
- await cmd('off'); await cmd('docker stop');
+ await cmd('off');
+ // A pre-v2 live browser is metadata-only here. Never read a password,
+ // dispatch daemon IPC, stop it, or silently replace its ephemeral profile.
+ legacyViewer = true;
+ const beforeLegacyIpc = seen.length, beforeLegacyStops = stops;
+ const legacyStatus = await cmd('docker status');
+ assert.match(legacyStatus, /legacy password viewer.*Do not stop or replace before explicit \/computer-use docker migrate/);
+ assert.match(legacyStatus, /http:\/\/127\.0\.0\.1:6080\/vnc\.html/);
+ assert.doesNotMatch(legacyStatus, /Viewer password:|PRIVATE-FIXTURE/);
+ assert.equal(seen.length, beforeLegacyIpc, 'legacy status does not read daemon or password');
+ assert.match(await cmd('on'), /Legacy Docker browser needs explicit \/computer-use docker migrate/);
+ assert.equal(mode.isEnabled(), false);
+ assert.match(await cmd('docker stop'), /Docker browser was NOT stopped/);
+ assert.match(await cmd('docker resume'), /Legacy Docker browser needs explicit \/computer-use docker migrate/);
+ assert.equal(stops, beforeLegacyStops); assert.equal(resumes, 3);
+ assert.equal(seen.length, beforeLegacyIpc, 'legacy browser is not sent desktop requests');
+ idle = false;
+ assert.match(await cmd('docker migrate'), /idle/, 'busy user session must not begin migration');
+ idle = true;
+ assert.equal(migrations, 0); assert.equal(stops, beforeLegacyStops);
+ const beforeMigrationStop = seen.filter(r => r.cmd === 'stop').length;
+ const migrated = await cmd('docker migrate');
+ assert.match(migrated, /profile migrated.*private persistent Docker volume.*passwordless localhost viewer started.*remains OFF/);
+ assert.equal(seen.filter(r => r.cmd === 'stop').length, beforeMigrationStop + 1);
+ assert.equal(migrations, 1); assert.equal(stops, beforeLegacyStops + 1); assert.equal(starts, 3);
+ assert.equal(profileRetained, true); assert.equal(mode.isEnabled(), false); assert.equal(target.target, 'docker');
+ assert.match(await cmd('docker status'), /Viewer \(localhost only, no password\)/);
+ assert.match(await cmd('docker migrate'), /requires the selected running legacy/);
+ assert.match(await cmd('docker stop'), /profile is retained/);
+ assert.equal(profileRetained, true, 'stop does not erase copied profile');
  await cmd('host'); assert.equal(target.target, 'host'); assert.equal(mode.isEnabled(), false);
- assert.equal(credentials, 8, 'viewer credentials only requested during explicit start/resume readiness and status');
+ assert.equal(viewerReads, 11, 'viewer metadata requested only on explicit start/resume/migrate readiness and status');
+ // A failed import is fail-closed: Stop was acknowledged but the source is
+ // preserved, no successor is started, and a repeated migration is not queued.
+ const failedHarness = extensionHarness(new Map());
+ const failedCtx = { ...ctx, sessionManager: { getBranch: () => [
+  { type: 'custom', customType: 'computer-use-target-v1', data: { target: 'docker' } },
+ ], getSessionId: () => 'failed-import-fixture' } };
+ const failedMode = new ComputerUseMode(failedHarness.pi, async () => true);
+ const failedWorkflow = new DesktopWorkflow(async () => ({ ok: true }));
+ let failedStarts = 0, failedStops = 0, failedMigrations = 0;
+ const failedRuntime = { ...runtime,
+  status: async () => ({ status: 'running', handle, authentication: 'legacy-password', requiresRecreate: true }),
+  migrateLegacyProfile: async () => { failedMigrations++; throw Error('private archive failure'); },
+  stop: async () => { failedStops++; }, start: async () => { failedStarts++; return handle; } };
+ const failedTarget = new DesktopTarget(failedHarness.pi, failedMode, failedWorkflow, () => failedRuntime);
+ failedMode.start(failedCtx, 'startup'); failedTarget.restore(failedCtx);
+ assert.equal(failedTarget.target, 'docker'); assert.equal(failedMode.isEnabled(), false);
+ const failedStopBefore = seen.filter(r => r.cmd === 'stop').length;
+ stopAcknowledged = false;
+ await assert.rejects(failedTarget.command('docker migrate', failedCtx), /Stop was not acknowledged.*Migration did not start/);
+ assert.equal(seen.filter(r => r.cmd === 'stop').length, failedStopBefore + 1);
+ assert.equal(failedMigrations, 0); assert.equal(failedStops, 0); assert.equal(failedStarts, 0);
+ assert.equal(failedMode.isEnabled(), false, 'unacknowledged Stop never authorizes input');
+ stopAcknowledged = true;
+ // A separate, deliberate user command can attempt migration after confirming Stop.
+ await assert.rejects(failedTarget.command('docker migrate', failedCtx), /migration was not completed.*Original browser remains/);
+ assert.equal(seen.filter(r => r.cmd === 'stop').length, failedStopBefore + 2);
+ assert.equal(failedMigrations, 1); assert.equal(failedStops, 0); assert.equal(failedStarts, 0);
+ assert.equal(failedMode.isEnabled(), false); assert.equal(failedTarget.target, 'docker');
+ await assert.rejects(failedTarget.enable(failedCtx), /Docker input stopped/);
+ await failedWorkflow.stop();
  await workflow.stop(); await forkWorkflow.stop();
  // Stop detaches its lease synchronously, but a subsequent target switch must
  // await the delayed END instead of routing it to a new backend.

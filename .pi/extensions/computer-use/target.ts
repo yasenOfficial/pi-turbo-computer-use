@@ -12,7 +12,7 @@ const ENTRY = "computer-use-target-v1";
 const STARTUP_WAIT_MS = 20_000;
 type Target = "host" | "docker";
 type Handle = { socketPath: string; id: string; containerId: string; name: string };
-type Runtime = Pick<BrowserDockerRuntime, "build" | "start" | "status" | "stop" | "viewerCredentials" | "restartInput">;
+type Runtime = Pick<BrowserDockerRuntime, "build" | "start" | "status" | "stop" | "viewerInfo" | "restartInput" | "migrateLegacyProfile">;
 
 /** Target identity is pinned for a tool's entire lifetime. Docker never consults the host startup or socket. */
 export class DesktopTarget {
@@ -61,9 +61,11 @@ export class DesktopTarget {
    throw new Error("Docker browser socket changed since selection; stop/start the container explicitly. No host fallback.");
   this.socketIdentity = identity;
  }
- private async running(ctx: ExtensionContext): Promise<Handle> {
+ private async running(ctx: ExtensionContext, allowLegacyMigration = false): Promise<Handle> {
   const state = await this.docker(ctx).status();
   if (state.status !== "running" || !state.handle?.socketPath) throw new Error("Docker browser is not running. No host fallback; use /computer-use docker start explicitly after stopping the old session.");
+  if (state.authentication !== "none" && !(allowLegacyMigration && state.authentication === "legacy-password" && state.requiresRecreate === true))
+   throw new Error("Legacy Docker browser needs explicit /computer-use docker migrate while OFF. Do not stop or replace it before migration: its temporary browser data may be lost. No desktop request was sent.");
   if (this.handle && (this.handle.socketPath !== state.handle.socketPath || this.handle.containerId !== state.handle.containerId))
    throw new Error("Docker browser identity changed; desktop operation blocked. No host fallback.");
   await this.verifySocket(state.handle.socketPath);
@@ -84,7 +86,7 @@ export class DesktopTarget {
    this.selected = "host"; this.handle = undefined; this.socketIdentity = undefined; this.pi.appendEntry(ENTRY, { target: "host" });
    return "Host desktop selected (OFF). /computer-use on is required before desktop actions.";
   });
-  if (!subcommand.startsWith("docker ")) throw new Error("Use docker build|start|status|stop|pause|resume, or host.");
+  if (!subcommand.startsWith("docker ")) throw new Error("Use docker build|start|status|stop|pause|resume|migrate, or host.");
   const action = subcommand.slice(7);
   if (action === "pause") {
    if (this.selected !== "docker") throw new Error("Select Docker before pausing it.");
@@ -111,10 +113,13 @@ export class DesktopTarget {
   }
   if (action === "status") {
    const state = await this.docker(ctx).status();
-   if (state.status !== "running") return `Docker browser: ${state.status}. Target: ${this.selected}. Computer use: ${this.mode.isEnabled() ? "ON" : "OFF"}. No host fallback.`;
-   // Credentials must only go to the interactive user, never a model tool result/session entry.
-   if (!ctx.hasUI) return `Docker browser: running. Target: ${this.selected}. Viewer credentials require an interactive user UI.`;
-   const credentials = await this.docker(ctx).viewerCredentials();
+   if (state.status !== "running") return `Docker browser: ${state.status}. Target: ${this.selected}. Computer use: ${this.mode.isEnabled() ? "ON" : "OFF"}. Persistent profile (new containers) is retained across stop/start. No host fallback.`;
+   const legacy = state.authentication !== "none";
+   // Never read a password, even for a legacy viewer. An old container has
+   // ephemeral profile data; stopping/replacing it is a separate user decision.
+   if (!ctx.hasUI) return `Docker browser: running${legacy ? " (legacy password viewer; explicit /computer-use docker migrate required before stopping)" : " (passwordless localhost viewer)"}. Target: ${this.selected}. Viewer URL requires user UI.`;
+   const viewer = await this.docker(ctx).viewerInfo();
+   if (legacy || viewer.authentication !== "none") return `Docker browser: running (legacy password viewer). Viewer (localhost only): ${viewer.url}. Do not stop or replace before explicit /computer-use docker migrate while OFF: its temporary profile may be lost. No password was read.`;
    let input = "unavailable or unverified";
    if (this.selected === "docker") {
     try {
@@ -124,12 +129,46 @@ export class DesktopTarget {
      input = info.input_stopped ? "stopped" : this.stopped ? "not confirmed (local Stop remains sticky)" : "ready";
     } catch { /* Viewer can remain available while the daemon is restarting or unsafe. */ }
    }
-   return `Docker browser: running. Target: ${this.selected}. Docker daemon input: ${input}. Viewer (localhost only): ${credentials.url}\nViewer password: ${credentials.password}`;
+   return `Docker browser: running. Target: ${this.selected}. Docker daemon input: ${input}. Viewer (localhost only, no password): ${viewer.url}. Persistent browser profile is retained across stop/start.`;
   }
   return this.change(ctx, async () => {
    if (this.mode.isEnabled()) throw new Error("Turn computer use OFF before changing the Docker container.");
+   if (action === "migrate") {
+    if (this.selected !== "docker") throw new Error("Select Docker before migrating its legacy browser profile.");
+    const state = await this.docker(ctx).status();
+    if (state.status !== "running" || state.authentication !== "legacy-password" || state.requiresRecreate !== true)
+     throw new Error("Migration requires the selected running legacy Docker browser; no browser was changed.");
+    // This is the ONLY path allowed to address the legacy daemon. Keep its
+    // verified socket/CID pinned, mark Stop sticky before sending any IPC, and
+    // never use the aborted run's signal. A failed acknowledgement must not
+    // initiate profile transfer or replace the source container.
+    const { socketPath } = await this.running(ctx, true);
+    this.stopped = true;
+    let response: DaemonResponse;
+    try { response = await new ComputerUseClient({ socketPath }).request({ cmd: "stop" }); }
+    catch { throw new Error("Legacy Docker Stop was not confirmed. Migration did not start; source browser remains. Do not retry uncertain input automatically."); }
+    if (response.ok !== true || response.input_stopped !== true)
+     throw new Error("Legacy Docker Stop was not acknowledged. Migration did not start; source browser remains.");
+    // Runtime imports directly into the verified private volume; never expose
+    // its archive, paths, passwords, or error details to the model or logs.
+    try { await this.docker(ctx).migrateLegacyProfile(); }
+    catch { throw new Error("Legacy profile migration was not completed. Original browser remains; Computer use OFF. Inspect private migration state before any further attempt; do not stop the source."); }
+    try { await this.docker(ctx).stop(); }
+    catch { throw new Error("Legacy profile was copied to the private volume, but verified removal of the old browser failed. Computer use OFF; inspect status before explicit recovery. No replacement was started."); }
+    this.handle = undefined; this.socketIdentity = undefined;
+    let handle: Handle;
+    try { handle = await this.docker(ctx).start(); }
+    catch { throw new Error("Legacy profile was copied and the old browser removed, but starting the new browser failed. Private profile is retained; Computer use OFF. Explicitly inspect status and start when safe."); }
+    this.handle = handle; this.stopped = false;
+    await this.waitReady(ctx);
+    this.workflow.resetAfterExplicitDaemonRestart();
+    return "Legacy browser profile migrated to the private persistent Docker volume. Old container removed; new passwordless localhost viewer started. Computer use remains OFF. Use /computer-use docker status for the viewer link, then /computer-use on explicitly.";
+   }
    if (action === "resume") {
     if (this.selected !== "docker") throw new Error("Select Docker before resuming it.");
+    // Sticky Stop must not bypass the new-profile identity check. In particular,
+    // never run a daemon restart against an old live ephemeral-profile container.
+    await this.running(ctx);
     if (!this.stopped) {
      // This is metadata only. A restarted/unexpected daemon must not be
      // implicitly restarted or substituted when input was already enabled.
@@ -157,16 +196,19 @@ export class DesktopTarget {
     const handle = await this.docker(ctx).start(); this.handle = handle; this.stopped = false;
     await this.waitReady(ctx);
     this.workflow.resetAfterExplicitDaemonRestart();
-    return "Docker browser started and selected (Computer use OFF). Use /computer-use docker status for private viewer login, then /computer-use on for agent control.";
+    return "Docker browser started and selected (Computer use OFF). Passwordless localhost viewer; the same private browser profile is reused across stop/start. Use /computer-use docker status for the viewer link, then /computer-use on for agent control.";
    }
    if (action === "stop") {
     if (this.selected !== "docker") throw new Error("Select Docker first; host emergency Stop is separate.");
     this.stopped = true; this.handle = undefined;
-    await this.docker(ctx).stop();
+    // Runtime validates the exact migrated legacy CID before removing it;
+    // without a completed import, legacy stop is refused and data survives.
+    try { await this.docker(ctx).stop(); }
+    catch { throw new Error("Docker browser was NOT stopped. Legacy containers require completed /computer-use docker migrate before removal; inspect status and retained profile. No host fallback."); }
     this.socketIdentity = undefined;
-    return "Docker browser stopped. Docker remains selected (OFF); no host fallback. Start a new container explicitly.";
+    return "Docker browser stopped; its private profile is retained for an explicit future start in this Pi session. Docker remains selected (OFF); no host fallback.";
    }
-   throw new Error("Use docker build|start|status|stop|pause|resume.");
+   throw new Error("Use docker build|start|status|stop|pause|resume|migrate.");
   });
  }
  interrupt(): void { this.generation++; }
@@ -189,7 +231,12 @@ export class DesktopTarget {
    // A supervisor may acknowledge restart before the old stopped daemon has
    // exited or the new socket is bound. Only this explicit resume may repin it.
    if (replacingStoppedDaemon) { this.stopped = false; this.socketIdentity = undefined; }
-   try { await this.compatible(ctx); await this.docker(ctx).viewerCredentials(); return; }
+   try {
+    await this.compatible(ctx);
+    const viewer = await this.docker(ctx).viewerInfo();
+    if (viewer.authentication !== "none") throw new Error("Viewer is not the passwordless persistent-profile version");
+    return;
+   }
    catch { if (Date.now() >= end) throw new Error("Docker browser readiness timed out. Target remains Docker and OFF; inspect status before another explicit operation. No host fallback."); }
    await new Promise(resolve => setTimeout(resolve, 200));
   }
