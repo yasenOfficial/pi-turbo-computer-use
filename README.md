@@ -9,7 +9,7 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 - **25 registered desktop tools**, with a smaller model loadout: **3 while OFF**, **18 basic tools while ON**, plus the phase tool in hybrid. A capture tool is declared only after its exact visual grant; other non-desktop tools are preserved. Convenience drag/double-click operations stay available inside batch rather than duplicate declarations.
 - **Action + verification in one batch:** wait for a transition, then assert exact live name/value/enabled/visible/focused fields. Default failure stops later steps; assertions do not read password values.
 - Optional **visible Sol → Luna routing in the same session**: Sol plans, Luna executes, and one explicit difficult-blocker escalation returns to Sol. No nested model or classifier calls.
-- `/computer-use on`, `off`, and `toggle`. **OFF blocks desktop observation and actions**, including task submission; only emergency Stop and metadata-only ping/metrics remain available. OFF at fresh Pi startup; `/reload` preserves the chosen mode.
+- `/computer-use on`, `off`, and `toggle`. **OFF blocks desktop observation and actions**, including task submission; only emergency Stop and metadata-only ping/metrics remain available. Fresh startup is OFF. Reload preserves deliberate host mode; Docker selection requires explicit `/browser use` to validate and enable it again.
 - An ON bar with hybrid/single model information, current phase, a live whole-run timer and last duration. Routing information is visible **only beside Computer use ON**, not as a virtual model in Pi's standard footer. Toggle/timing state is session-local; the physical desktop and emergency Stop are shared.
 - Breathing blue screen-edge light and a smooth cursor-following halo during desktop work **including model thinking**, with expiring workflow leases and capture suspension.
 - Lazy daemon startup and safety/version validation before UI calls. Authenticated, idle, extension-owned daemons can upgrade gracefully; arbitrary or emergency-stopped processes are never forcibly replaced.
@@ -42,7 +42,7 @@ cd pi-turbo-computer-use
 ./scripts/install.sh
 ```
 
-The script builds the release daemon, installs it to `~/.local/bin/pi-turbo-daemon`, and installs `~/.config/pi-computer/config.toml` **only if absent**. It does not install a service, modify Pi settings, or start a desktop workflow.
+The script builds the release daemon, installs it to `~/.local/bin/pi-turbo-daemon`, and installs `~/.config/pi-computer/config.toml` **only if absent**. It does not install a service, modify Pi settings, or start a desktop workflow. **For Docker-browser-only use, skip `./scripts/install.sh`:** clone the repository, add the extension path below, reload Pi, and run `/browser use`. The command builds the daemon inside its Docker image; no host Rust build is needed.
 
 Add the **absolute** extension path to the existing `extensions` array in `~/.pi/agent/settings.json`, preserving all other entries/settings:
 
@@ -67,6 +67,9 @@ Optional foreground start for diagnostics:
 ## Usage
 
 ```text
+/browser use                       Start/check the shared isolated browser; show viewer link
+/browser use off                   Stop the browser; preserve profile and tabs
+/browser use pause                 Pause automation for manual intervention
 /computer-use on                    Enable direct desktop prompts
 /computer-use off                   Disable persistent mode (not emergency Stop)
 /computer-use toggle                Toggle mode
@@ -97,6 +100,17 @@ That's the normal workflow—no manual Docker build/start/migrate/status/ON sequ
 **One browser and one persistent profile are shared across all Pi chats.** An exclusive per-run control claim prevents competing chats from interleaving automation. OFF stops the common browser for all chats. Cookies/site data and normal Firefox tabs survive restart/removal; websites may still expire sessions. Shutdown requests a normal private-display Firefox close before ending the virtual screen so it can save the tab session. Downloads outside the profile remain temporary. No live profile is migrated by installation/testing; explicit `/browser use` handles a uniquely verified old profile safely.
 
 **Localhost is not authentication:** other local clients reaching the port can control the logged-in browser. Never expose/forward it publicly. No host display/D-Bus/Docker socket, home or personal browser profile is mounted. Docker has outbound bridge networking, not network isolation; Pi's ordinary bash/file tools remain on the host. Reload/shutdown leave the browser running until explicit OFF. The old `/computer-use docker …` commands remain only for advanced diagnostics. [Guide and limits](docs/DOCKER-BROWSER.md).
+
+### Updating and browser recovery
+
+After pulling updates, run `/reload`, then `/browser use`. The extension refreshes its native runtime by source hash, prepares the current image only when needed, and preserves the common browser profile. You do not need to clear caches, delete the container/volume, or run Docker commands manually.
+
+- **Viewer failed to connect:** use the fresh link shown by `/browser use`; a recreated container can have a different localhost port. Readiness includes the live WebSocket/RFB backend, not just the noVNC HTML page.
+- **Old image removed while its container still runs:** the runtime verifies the pinned container, isolation settings and profile volume, then permits controlled cleanup/upgrade. A missing old image alone is not treated as an unsafe container. New containers still require a trusted image.
+- **Shared control busy:** let the other Pi chat finish or pause its task. Do not delete locks or profile data to force another controller in.
+- **Login or tabs:** the shared profile persists and normal tabs restore, but websites may expire sessions and private windows are not saved. Never delete the profile volume as a troubleshooting shortcut.
+
+For exact security boundaries, exceptional recovery and test evidence, see [the browser guide](docs/DOCKER-BROWSER.md).
 
 ### Native first; GUI when necessary
 
