@@ -1,6 +1,16 @@
 # Security and privacy
 
-This experimental extension acts on the real X11 desktop using the current user's privileges. It is not a sandbox or a permission enforcement system for arbitrary models. Review tasks and avoid parallel agent input on the same display.
+By default, this experimental extension acts on the real X11 desktop using the current user's privileges. The optional Docker browser target directs registered desktop tools to a separate virtual screen with no automatic host fallback. **Neither mode sandboxes Pi's ordinary host bash/file tools or arbitrary extensions.** Review tasks and avoid parallel agent input on the same display.
+
+## Docker browser target
+
+See [Docker browser guide](docs/DOCKER-BROWSER.md). The container has no host display/D-Bus/Docker socket, home, workspace or browser-profile mount. Its only bind mount is a private, per-session IPC directory; UID, image/container/network identity, privileges, mounts and loopback port publication are checked before use. Missing/unsafe Docker state blocks calls rather than selecting the host. Host selection is explicit and idle/OFF only.
+
+The noVNC viewer is localhost HTTP, not a remotely hardened service. Its traditional VNC password is limited to eight random Base64 characters (48 bits); do not expose or forward the port publicly. Credentials live in container tmpfs and are shown only through explicit command UI, never model results or saved session entries. Local same-user processes remain trusted. A browser/daemon sharing this container is not a separate user-to-user boundary.
+
+A dedicated outbound Docker bridge **can reach internet/LAN/host-gateway services**; it is not network isolation or an egress allowlist. Docker has shared-kernel/container-escape risks, and Docker-group control itself has host-level authority. Pi shell permissions are unchanged: the Docker-only desktop routing promise is not an OS sandbox for a malicious model with shell access.
+
+Pause requires an acknowledged native Stop before manual takeover; accepted events cannot be undone. Resume explicitly restarts only the stopped container daemon and leaves mode OFF. No automatic Stop reset or uncertain input replay. Browser state is ephemeral and is destroyed on explicit container removal; reload/shutdown do not remove it automatically.
 
 ## Safety boundaries
 
@@ -24,7 +34,7 @@ Do **not** publish:
 
 - Pi conversation/session files or personal settings.
 - Browser profiles, cookies, passwords, login/MFA codes, or credential databases.
-- Daemon owner records/management tokens from the private state directory.
+- Daemon owner records/management tokens, Docker runtime records, or noVNC viewer passwords from private state/UI.
 - Unredacted desktop screenshots, accessible trees, diagnostics, or logs.
 - API/SSH tokens, private keys, `.env` files, or user workspace artifacts.
 

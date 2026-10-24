@@ -52,6 +52,7 @@ export class ComputerUseMode {
 	private lastTiming?: Timing;
 	private ticker?: ReturnType<typeof setInterval>;
 	private routingLabel?: string;
+	private targetLabel = "Host desktop";
 	constructor(private readonly pi: ExtensionAPI,
 		private readonly notify = sendDesktopCompletion,
 		private readonly timer: TimerRuntime = { now: () => performance.now(), setInterval, clearInterval }) {
@@ -71,10 +72,12 @@ export class ComputerUseMode {
 		this.render(ctx);
 	}
 
+	setTargetLabel(label: string, ctx: ExtensionContext): void { this.targetLabel = label; this.render(ctx); }
+
 	private render(ctx: ExtensionContext): void {
 		if (ctx.mode !== "tui" || !ctx.hasUI) return;
 		ctx.ui.setWidget(WIDGET, this.enabled ? (_tui, theme) => ({
-			render: (width: number) => [theme.fg("accent", computerUseBar(width, `${this.routingLabel ? ` · ${this.routingLabel}` : ""}${this.timingSuffix()}`))],
+			render: (width: number) => [theme.fg("accent", computerUseBar(width, ` · ${this.targetLabel}${this.routingLabel ? ` · ${this.routingLabel}` : ""}${this.timingSuffix()}`))],
 			invalidate() {},
 		}) : undefined, { placement: "aboveEditor" });
 	}
@@ -124,9 +127,9 @@ export class ComputerUseMode {
 		this.render(ctx);
 		this.syncTicker();
 		// Keep the ordinary native-tool route visible in every mode, even fresh OFF.
-		event.systemPromptOptions.sections[STRATEGY_SECTION] = EXECUTION_STRATEGY;
+		event.systemPromptOptions.sections[STRATEGY_SECTION] = `${EXECUTION_STRATEGY} Selected desktop target: ${this.targetLabel}. Docker selection never falls back to the host desktop; do not launch host native GUI apps with Pi shell while Docker is selected. Pi shell is not sandboxed; use it for authorized non-GUI tasks.`;
 		if (this.enabled) {
-			event.systemPromptOptions.sections[SECTION] = `Computer use mode is ON for this session. The user can submit desktop tasks directly without a slash-command prefix. Answer ordinary questions directly when no desktop interaction is needed. This mode does not authorize unrequested actions, enrollment, schedule changes, credential extraction, or destructive operations. Browser-native saved-login use is authorized only within the task and the saved-login rules below.\n${COMPUTER_USE_INSTRUCTIONS}`;
+			event.systemPromptOptions.sections[SECTION] = `Computer use mode is ON for this session. Selected desktop target: ${this.targetLabel}. All desktop_* operations including Stop, ping and metrics apply only to this selected target. Docker browser selection never falls back to host GUI, including on socket failure; do not launch host native GUI apps via Pi bash when Docker is selected. Pi shell/file tools remain unrestricted for ordinary authorized non-GUI work, so this is not a host-shell sandbox. The user can submit desktop tasks directly without a slash-command prefix. Answer ordinary questions directly when no desktop interaction is needed. This mode does not authorize unrequested actions, enrollment, schedule changes, credential extraction, or destructive operations. Browser-native saved-login use is authorized only within the task and the saved-login rules below.\n${COMPUTER_USE_INSTRUCTIONS}`;
 		} else {
 			delete event.systemPromptOptions?.sections?.[SECTION];
 		}

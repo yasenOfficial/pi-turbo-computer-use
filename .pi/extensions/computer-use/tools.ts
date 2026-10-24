@@ -2,6 +2,7 @@ import { Type, type TSchema } from "typebox";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { computerUseClient } from "./client.js";
 import type { DesktopDaemonStartup } from "./daemon.js";
+import type { DesktopTarget } from "./target.js";
 import type { DaemonRequest, JsonValue } from "./types.js";
 
 interface CommandDefinition {
@@ -720,7 +721,7 @@ export interface DesktopToolLifecycle {
 	beforeExecute(name: string, signal?: AbortSignal): Promise<void> | void;
 }
 
-export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopToolLifecycle, startup?: DesktopDaemonStartup): void {
+export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopToolLifecycle, startup?: DesktopDaemonStartup, target?: DesktopTarget): void {
 	for (const command of commands) {
 		pi.registerTool({
 			name: command.name,
@@ -735,28 +736,33 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 				destructiveHint: command.readOnly !== true,
 				openWorldHint: command.readOnly !== true,
 			},
-			async execute(_toolCallId, params, signal) {
+			async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+				const pin = target?.pin();
+				const gate = pin ? target!.startup(ctx, pin.target) : startup;
+				try {
 				if (command.name === "desktop_paste_text") pasteParameters(params);
-				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();
-				if (command.name === "desktop_stop") startup?.markStopped();
-				else if (command.name === "desktop_ping" || command.name === "desktop_metrics") await startup?.ensure(signal);
-				else await startup?.ensureCompatible(signal, command.name === "desktop_launch_app" &&
+				if (command.name !== "desktop_stop" && !command.readOnly) gate?.assertInputAllowed();
+				if (command.name === "desktop_stop") gate?.markStopped();
+				else if (command.name === "desktop_ping" || command.name === "desktop_metrics") await gate?.ensure(signal);
+				else await gate?.ensureCompatible(signal, command.name === "desktop_launch_app" &&
 					typeof (params as Record<string, unknown>).query === "string" ? "app_discovery" :
 					command.name === "desktop_paste_text" ? "clipboard_paste" : undefined);
-				// A lease begin must never race ahead of cold-start readiness. Check
-				// again after it: Stop may arrive while a lease begin is pending.
-				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();
+				// A lease begin must never race ahead of cold-start readiness. Pause/OFF
+				// may also have happened while readiness was pending.
+				target?.assertDispatchAllowed(daemonCommand(command.name));
+				if (command.name !== "desktop_stop" && !command.readOnly) gate?.assertInputAllowed();
 				await lifecycle?.beforeExecute(command.name, signal);
-				if (command.name !== "desktop_stop" && !command.readOnly) startup?.assertInputAllowed();
+				target?.assertDispatchAllowed(daemonCommand(command.name));
+				if (command.name !== "desktop_stop" && !command.readOnly) gate?.assertInputAllowed();
 				const payload = asJsonValue(params) as Record<string, JsonValue>;
 				const request: DaemonRequest = { cmd: daemonCommand(command.name), ...payload };
 				let response: Record<string, unknown>;
-				try { response = await computerUseClient.request(request, signal); }
+				try { response = target && pin ? await target.request(ctx, pin.target, request, signal) : await computerUseClient.request(request, signal); }
 				catch (error) {
 					// Client.request throws the daemon's error text for ordinary failed
 					// commands. Only these anchored native Stop rejections are sticky;
 					// connection/timeout errors and arbitrary UI text are not evidence.
-					if (error instanceof Error && /^(?:input stopped(?:;|$)|emergency stop active(?:$|[.;]))/.test(error.message)) startup?.markStopped();
+					if (error instanceof Error && /^(?:input stopped(?:;|$)|emergency stop active(?:$|[.;]))/.test(error.message)) gate?.markStopped();
 					if (command.name === "desktop_paste_text") {
 						// Never surface daemon/UI diagnostics that might contain field or clipboard data.
 						const message = error instanceof Error ? error.message : "";
@@ -771,7 +777,7 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 				// launch_app and batch preserve failed responses rather than throwing.
 				if (response.input_stopped === true ||
 					(response.ok === false && typeof response.error === "string" &&
-					/^(?:input stopped(?:;|$)|emergency stop active(?:$|[.;]))/.test(response.error))) startup?.markStopped();
+					/^(?:input stopped(?:;|$)|emergency stop active(?:$|[.;]))/.test(response.error))) gate?.markStopped();
 				const visible = modelResponse(response, command.name, payload);
 				const text = responseText(visible,
 					command.name === "desktop_observe" || command.name === "desktop_changes" ? MAX_OBSERVATION_TEXT : MAX_TEXT);
@@ -799,6 +805,7 @@ export function registerComputerUseTools(pi: ExtensionAPI, lifecycle?: DesktopTo
 					details: { command: command.name, response: rendered },
 					isError: response.ok === false,
 				};
+				} finally { pin?.release(); }
 			},
 		});
 	}

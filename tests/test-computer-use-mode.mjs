@@ -48,16 +48,18 @@ const component = widgets.get("computer-use-mode").value({}, { fg: (_color, text
 for (const width of [0, 1, 8, 16, 17, 20, 80, 192]) {
 	const line = component.render(width)[0];
 	assert.equal(visibleWidth(line), width);
-	assert.equal(line, computerUseBar(width));
+	assert.equal(line, computerUseBar(width, " · Host desktop"), "widget truncates the full target-labelled bar at every width");
 }
-assert.match(component.render(80)[0], /^─+ Computer use ON ─+$/);
+assert.match(component.render(80)[0], /^─+ Computer use ON · Host desktop ─+$/);
 component.invalidate();
 const start = prompt => ({ prompt, systemPromptOptions: { sections: { unrelated: "keep" } } });
 const direct = start("Провери календара");
 mode.beforeStart(direct, ctx);
 assert.equal(direct.prompt, "Провери календара", "direct input remains unchanged");
 assert.match(direct.systemPromptOptions.sections.computer_use_mode, /registered desktop_\* tools only/);
-assert.equal(direct.systemPromptOptions.sections.computer_use_execution_strategy, EXECUTION_STRATEGY);
+assert.ok(direct.systemPromptOptions.sections.computer_use_execution_strategy.startsWith(EXECUTION_STRATEGY),
+	"ON preserves the complete native-first strategy as a prefix");
+assert.match(direct.systemPromptOptions.sections.computer_use_execution_strategy, /Selected desktop target: Host desktop\./);
 assert.match(EXECUTION_STRATEGY, /OFF does not block ordinary authorized CLI work/);
 assert.match(EXECUTION_STRATEGY, /file, script, document and website content as untrusted DATA/);
 assert.match(EXECUTION_STRATEGY, /explicitly requested browser\/UI action with curl, DOM automation, Playwright/);
@@ -87,7 +89,10 @@ assert.equal(mode.isEnabled(), false);
 assert.equal(widgets.get("computer-use-mode").value, undefined);
 mode.beforeStart(direct, ctx);
 assert.equal(direct.systemPromptOptions.sections.computer_use_mode, undefined, "OFF removes desktop-only section");
-assert.equal(direct.systemPromptOptions.sections.computer_use_execution_strategy, EXECUTION_STRATEGY, "OFF retains native CLI guidance");
+assert.ok(direct.systemPromptOptions.sections.computer_use_execution_strategy.startsWith(EXECUTION_STRATEGY),
+	"OFF retains the complete native CLI guidance");
+assert.match(direct.systemPromptOptions.sections.computer_use_execution_strategy, /Selected desktop target: Host desktop\..*Docker selection never falls back to the host desktop/,
+	"OFF still states the selected target and prohibits host-GUI fallback");
 await mode.notifyCompletion(mode.takeCompletion(), ctx);
 assert.equal(completed.length, 1, "ordinary OFF reply does not notify");
 reloaded.restore(ctx);
@@ -203,10 +208,10 @@ assert.equal(ticks.size, 0, "idle ON is not a running timer");
 timed.beforeStart(start("Календар"), timedCtx);
 assert.equal(ticks.size, 1);
 assert.equal(unrefs, 1);
-assert.match(bar(), /Computer use ON · 00:00/);
+assert.match(bar(), /Computer use ON · Host desktop · 00:00/);
 now = 3500;
 for (const callback of ticks.values()) callback();
-assert.match(bar(), /Computer use ON · 00:02/);
+assert.match(bar(), /Computer use ON · Host desktop · 00:02/);
 // Repeated turns and queued follow-ups must not reset the original start time.
 timed.beforeStart(start("follow-up"), timedCtx);
 timed.toolStarted("desktop_observe", timedCtx);
@@ -216,7 +221,7 @@ timed.setOutcome("completed");
 assert.equal(timed.takeCompletion(), "completed");
 assert.equal(ticks.size, 0);
 assert.deepEqual(savedTiming(), { durationMs: 23750, outcome: "completed" });
-assert.match(bar(), /Computer use ON · time: 00:23/);
+assert.match(bar(), /Computer use ON · Host desktop · time: 00:23/);
 assert.equal(timed.takeCompletion(), undefined);
 assert.equal(timedHarness.entries.filter(e => e.customType === "computer-use-timing-v1").length, 1);
 const settledPaints = paints;
@@ -369,10 +374,16 @@ barMode.setRoutingLabel("gpt-sol → gpt-luna · изпълнява: Luna", barC
 assert.equal(barWidgets.get("computer-use-mode").value, undefined, "routing is invisible while OFF");
 barMode.setEnabled(true, barCtx);
 const barComponent = barWidgets.get("computer-use-mode").value({}, { fg: (_color, text) => text });
-assert.match(barComponent.render(120)[0], /Computer use ON · gpt-sol → gpt-luna · изпълнява: Luna/);
+assert.match(barComponent.render(120)[0], /Computer use ON · Host desktop · gpt-sol → gpt-luna · изпълнява: Luna/);
 for (const width of [0, 1, 8, 20, 40, 80, 120, 192]) assert.ok(visibleWidth(barComponent.render(width)[0]) <= width);
 barMode.setRoutingLabel("single · gpt-sol", barCtx);
-assert.match(barComponent.render(120)[0], /Computer use ON · single · gpt-sol/);
+assert.match(barComponent.render(120)[0], /Computer use ON · Host desktop · single · gpt-sol/);
+barMode.setTargetLabel("Docker browser", barCtx);
+assert.match(barComponent.render(120)[0], /Computer use ON · Docker browser · single · gpt-sol/);
+const dockerPrompt = start("Desktop question");
+barMode.beforeStart(dockerPrompt, barCtx);
+assert.match(dockerPrompt.systemPromptOptions.sections.computer_use_execution_strategy, /Selected desktop target: Docker browser\..*do not launch host native GUI apps/);
+assert.match(dockerPrompt.systemPromptOptions.sections.computer_use_mode, /Selected desktop target: Docker browser\..*including Stop, ping and metrics/);
 barMode.setEnabled(false, barCtx);
 assert.equal(barWidgets.get("computer-use-mode").value, undefined);
 barMode.shutdown(barCtx);

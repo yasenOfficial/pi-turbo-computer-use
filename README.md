@@ -14,11 +14,12 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 - Breathing blue screen-edge light and a smooth cursor-following halo during desktop work **including model thinking**, with expiring workflow leases and capture suspension.
 - Lazy daemon startup and safety/version validation before UI calls. Authenticated, idle, extension-owned daemons can upgrade gracefully; arbitrary or emergency-stopped processes are never forcibly replaced.
 - **Action required** handoff for MFA/2FA, CAPTCHA, missing/ambiguous login, approval, or a genuine technical blocker. Generic OS notifications contain no task text or credentials. User abort/Stop is silent.
+- Optional **Docker browser target**: isolated Firefox/virtual desktop, private accessibility bus, and localhost-only password-protected noVNC viewer. Watch or pause/take over without moving the host desktop's pointer or focus. Docker failures never fall back to host; this isolates desktop tools, **not Pi's host shell**. [Setup and limits](docs/DOCKER-BROWSER.md).
 
 ## Requirements
 
-- Linux **X11**, XTEST, and a session D-Bus/AT-SPI registry. Tested on Linux Mint Cinnamon; **Wayland is not supported**.
-- Current Rust/Cargo and native GLib/GIO development libraries.
+- **Host target:** Linux **X11**, XTEST, and a session D-Bus/AT-SPI registry. Tested on Linux Mint Cinnamon; host Wayland automation is not supported. **Docker target:** local Linux Docker Engine access; X11/D-Bus run privately inside the container, without using the host display.
+- Current Rust/Cargo and native GLib/GIO development libraries for a host daemon build. Docker-only builds install their build/runtime dependencies inside the image.
 - An installed, trusted Pi extension runtime that provides `@earendil-works/pi-coding-agent`, `@earendil-works/pi-tui`, and `typebox`, including **`agent_settled`**, structured `before_agent_start`, `tool_call`, and `model-only` tool support. Development uses the Pi Codex Ultra / Earendil API; other Pi builds may differ. Do not assume every upstream/fork release is compatible.
 - `notify-send` and a desktop notification service for OS notifications (optional).
 - Python 3 for IPC test/benchmark scripts; Node.js for extension tests.
@@ -83,6 +84,22 @@ Example:
 While ON, normal prompts receive computer-use operating rules. The bar shows `Computer use ON · 00:12`, then `Computer use ON · time: 00:23`. Timing begins before model execution and includes tool work/continuations, but not time waiting in Pi's input queue. Turning OFF hides the bar and blocks further desktop tool calls. It does not cancel an already-running tool or revoke an already-issued input event. The agent cannot auto-enable the mode.
 
 For a user-only blocker, the agent calls `desktop_request_user`, explains the concrete step, ends its turn, and sends **Pi · Action required** at settlement instead of a completion notification. Complete the step directly and reply **“готово” / “done”**; the agent re-observes and continues. There is no background polling or second model orchestrator. Saved browser login may be used through the normal browser autofill UI for the matching requested site/account, unless the task forbids it. Password extraction/reveal, account creation, OTP retrieval, and security bypass are not authorized. This is model guidance and explicit handoff, not guaranteed automatic recognition of every login screen.
+
+### Browser-only Docker mode
+
+With Computer use OFF and Pi idle:
+
+```text
+/computer-use docker build          Explicit first-time image build
+/computer-use docker start          Select fresh Docker browser; stays OFF
+/computer-use docker status         Show private localhost viewer link/password
+/computer-use on                    Enable agent control inside Docker
+/computer-use docker pause          OFF + abort + acknowledged native Stop
+/computer-use docker resume         Restart only stopped daemon; browser stays, mode OFF
+/computer-use on                    Explicitly resume agent control
+```
+
+Open the status link yourself in your normal browser. Wait for confirmed pause before intervening. Stop/delete the ephemeral browser with `off`, then `docker stop`; to return to the real desktop use `host`, then `on` explicitly. No host X11/D-Bus/Docker socket, home or browser profile is mounted. Docker uses outbound bridge networking, **not network isolation**. Pi's ordinary bash/file tools remain on the host and are not sandboxed. Profiles/downloads disappear on container removal; reload/shutdown leave the browser running until explicit stop. [Full guide, security and recovery](docs/DOCKER-BROWSER.md).
 
 ### Native first; GUI when necessary
 
@@ -176,7 +193,7 @@ Model reasoning, context size, image dimensions, and the number of round trips a
 
 **Ctrl+Alt+Esc** is the primary emergency Stop hotkey; the daemon tries **Ctrl+Alt+Shift+Escape** if that grab is unavailable. `desktop_stop` also disables input immediately without waiting behind the action mutex. Stop is sticky: deliberately restart your own daemon and `/reload` only when safe. The extension must not revive stopped input automatically.
 
-Tools operate on your real desktop with your user's privileges. Multiple Pi sessions are **not isolated desktops**; their workflows can interleave. No screenshot, browser profile, saved credential, ownership token, or session transcript belongs in a public bug report. See [SECURITY.md](SECURITY.md).
+In the default **Host desktop** target, tools operate on your real desktop with your user's privileges. Multiple host-target Pi sessions are **not isolated desktops**; their workflows can interleave. An explicitly selected **Docker browser** target uses its own virtual desktop and never automatically falls back to host. Docker is not an absolute sandbox and does not sandbox Pi's host bash/file tools. No screenshot, browser profile, saved credential, ownership token, or session transcript belongs in a public bug report. See [SECURITY.md](SECURITY.md).
 
 ## Configuration and troubleshooting
 
@@ -217,6 +234,8 @@ node tests/test-daemon-autostart.mjs
 node tests/test-daemon-autostart-real.mjs
 node tests/test-daemon-upgrade.mjs
 node tests/test-launch-app.mjs
+node tests/test-browser-docker-runtime.mjs
+node tests/test-docker-browser-target.mjs
 ```
 
 Node integration tests require the compatible Pi SDK. They prefer `PI_CODING_AGENT_PACKAGE` (path to its `package.json`) or `PI_CODEX_ULTRA_RELEASE_ROOT`; otherwise they search the local Pi Codex Ultra release installation. Core notification tests inject subprocess mocks and do not send real notifications. GUI test scripts are optional and described separately; inspect their scope before running them. GitHub CI runs native Rust checks without controlling a user's desktop.

@@ -257,7 +257,7 @@ try {
 	await command.handler("", ctx(true));
 	assert.match(notifications.at(-1).message, /25 registered desktop_\* tools \(3 active\)/);
 	assert.match(notifications.at(-1).message, /connectivity and input state not checked/);
-	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
+	assert.deepEqual(command.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail", "host", "docker build", "docker start", "docker status", "docker stop", "docker pause", "docker resume"]);
 	assert.deepEqual(command.getArgumentCompletions("debug ").map(({ value }) => value), ["debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
 	const debugDirectory = path.join(process.env.XDG_STATE_HOME, "pi-computer", "debug");
 	const debugPrefs = () => entries.filter(entry => entry.customType === "computer-use-debug-v1");
@@ -703,10 +703,18 @@ try {
 
 	// Exercise the new tool after existing index-sensitive assertions, with its own workflow.
 	const launchTools = new Map();
+	const launchCommands = new Map();
+	let launchActive = [];
 	const { handlers: launchHandlers, on: onLaunch } = listenerRegistry();
-	extension({ registerTool: (tool) => launchTools.set(tool.name, tool), registerCommand: () => {},
+	extension({ registerTool: (tool) => launchTools.set(tool.name, tool), registerCommand: (name, cmd) => launchCommands.set(name, cmd),
+		getAllTools: () => [...launchTools.keys()].map(name => ({ name })), getActiveTools: () => launchActive,
+		setActiveTools: tools => { launchActive = tools; },
 		registerVirtualModel: () => {}, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
 		on: onLaunch });
+	const launchContext = { ui: { notify() {} }, isIdle: () => true, mode: "print", hasUI: false,
+		sessionManager: { getBranch: () => [], getSessionId: () => "isolated-launch-test" } };
+	await launchHandlers.get("session_start")({ reason: "startup" }, launchContext);
+	await launchCommands.get("computer-use").handler("on", launchContext);
 	const launchTool = launchTools.get("desktop_launch_app");
 	assert.ok(launchTool, "launch must be registered as a direct model tool");
 	assert.equal(launchTool.annotations.readOnlyHint, false);
@@ -786,11 +794,16 @@ try {
 	// A stopped lease does not authorize launch: the daemon's independent safety gate rejects it.
 
 	legacyMode = true;
-	const legacyTools = new Map();
+	const legacyTools = new Map(), legacyCommands = new Map();
+	let legacyActive = [];
 	const { handlers: legacyHandlers, on: onLegacy } = listenerRegistry();
-	extension({ registerTool: (tool) => legacyTools.set(tool.name, tool), registerCommand: () => {},
+	extension({ registerTool: (tool) => legacyTools.set(tool.name, tool), registerCommand: (name, cmd) => legacyCommands.set(name, cmd),
+		getAllTools: () => [...legacyTools.keys()].map(name => ({ name })), getActiveTools: () => legacyActive,
+		setActiveTools: tools => { legacyActive = tools; },
 		registerVirtualModel: () => {}, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
 		on: onLegacy });
+	await legacyHandlers.get("session_start")({ reason: "startup" }, launchContext);
+	await legacyCommands.get("computer-use").handler("on", launchContext);
 	const oldWarnings = console.warn;
 	const warnings = [];
 	console.warn = (message) => warnings.push(message);

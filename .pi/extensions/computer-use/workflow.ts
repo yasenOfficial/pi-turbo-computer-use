@@ -15,6 +15,7 @@ type Lease = {
 /** One lease per desktop workflow, not per call or per model turn. No resources until execute. */
 export class DesktopWorkflow {
 	private lease?: Lease;
+	private closing?: Promise<void>;
 	private stopped = false;
 	private unsupported = false;
 	private warned = false;
@@ -95,17 +96,25 @@ export class DesktopWorkflow {
 
 	async close(): Promise<void> {
 		const lease = this.lease;
-		if (!lease) return;
+		if (!lease) { await this.closing; return; }
 		this.lease = undefined;
 		if (lease.timer) clearTimeout(lease.timer);
 		for (const signal of lease.signals) signal.removeEventListener("abort", this.onAbort);
-		// End only after begin/renew: a late reply must not recreate an ended lease.
-		const begun = await lease.begin;
-		await lease.pending;
-		if (begun) {
-			try { await this.request({ cmd: "control_activity", action: "end", token: lease.token }); }
-			catch (error) { this.diagnostic(error); }
-		}
+		// A second close (including target switch after Stop) must wait for the
+		// detached lease's END, not route that late END to another target.
+		const previous = this.closing;
+		const closing = (async () => {
+			await previous;
+			const begun = await lease.begin;
+			await lease.pending;
+			if (begun) {
+				try { await this.request({ cmd: "control_activity", action: "end", token: lease.token }); }
+				catch (error) { this.diagnostic(error); }
+			}
+		})();
+		this.closing = closing;
+		try { await closing; }
+		finally { if (this.closing === closing) this.closing = undefined; }
 	}
 
 	async newRun(signal?: AbortSignal): Promise<void> {
@@ -113,6 +122,9 @@ export class DesktopWorkflow {
 		this.unsupported = false;
 		this.runSignal = signal;
 	}
+
+	/** Only after an explicit Docker daemon restart or new container; never reset host Stop. */
+	resetAfterExplicitDaemonRestart(): void { this.stopped = false; this.unsupported = false; }
 
 	stop(): Promise<void> {
 		this.stopped = true;

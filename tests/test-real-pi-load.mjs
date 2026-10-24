@@ -93,10 +93,12 @@ try {
 	assert.match(notices.at(-1), /25 registered desktop_\* tools/);
 	await slashCommand.handler("instructions", { ui: { notify: (text) => notices.push(text) } });
 	assert.match(notices.at(-1), /removed/);
-	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail"]);
+	assert.deepEqual(slashCommand.getArgumentCompletions("").map(({ value }) => value), ["toggle", "on", "off", "models", "models hybrid", "models single", "debug on", "debug off", "debug report", "debug result pass", "debug result fail", "host", "docker build", "docker start", "docker status", "docker stop", "docker pause", "docker resume"]);
 	const debugDirectory = path.join(process.env.XDG_STATE_HOME, "pi-computer", "debug");
 	const debugPrefs = () => session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-debug-v1");
 	assert.equal(existsSync(debugDirectory), false, "real extension load never creates a debug directory");
+	const before = (prompt, sections = {}) => session.extensionRunner.emitBeforeAgentStart(
+		{ messageType: "user", prompt, images: [] }, { cwd, sections });
 	const messageCount = session.messages.length;
 	const toolCall = (toolName, suffix) => session.extensionRunner.emitToolCall({ type: "tool_call",
 		toolCallId: `load-gate-${suffix}`, toolName, input: {} });
@@ -125,7 +127,7 @@ try {
 	await session.prompt("/computer-use debug on unsafe/label");
 	await session.prompt("/computer-use debug result pass");
 	assert.equal(debugPrefs().length, debugPrefCount, "invalid label and result without a report do not change preferences");
-	await session.extensionRunner.emitBeforeAgentStart("PRIVATE_ORDINARY_QUESTION", undefined, { cwd });
+	await before("PRIVATE_ORDINARY_QUESTION");
 	assert.equal(existsSync(debugDirectory), false, "real OFF before_agent_start does not log ordinary questions");
 	await session.reload();
 	assert.equal(debugPrefs().at(-1).data.enabled, true, "reload restores debug ON in the same branch");
@@ -145,7 +147,7 @@ try {
 		"mode changes preserve unrelated active tools");
 	assert.equal((await toolCall("desktop_observe", "on-observe"))?.block, undefined, "ON allows semantic observation");
 	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, true);
-	const onPrompt = await session.extensionRunner.emitBeforeAgentStart("Провери календара", undefined, { cwd, sections: { other: "keep" } });
+	const onPrompt = await before("Провери календара", { other: "keep" });
 	assert.match(onPrompt.systemPromptOptions.sections.computer_use_mode, /desktop_\* tools only/);
 	assert.match(onPrompt.systemPromptOptions.sections.computer_use_mode, /desktop_visual_permission/);
 	assert.match(onPrompt.systemPromptOptions.sections.computer_use_mode, /uncertain input/);
@@ -186,11 +188,17 @@ try {
 		toolName: "desktop_screenshot", input: region }))?.reason ?? "", /Visual capture blocked/);
 	assert.equal(existsSync(process.env.COMPUTER_USE_SOCKET), false, "grant and gate never start a daemon");
 	await session.reload(); // Same session: persisted boolean restores without model/desktop work.
-	const restored = await session.extensionRunner.emitBeforeAgentStart("Провери waiting list", undefined, { cwd });
+	const restored = await before("Провери waiting list");
 	assert.match(restored.systemPromptOptions.sections.computer_use_mode, /Computer use mode is ON/);
 	assert.equal(activeDesktop().length, 18, "reload restores the ON baseline, not optional captures");
+	await session.extensionRunner.emit({ type: "session_tree" });
+	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"],
+		"real Pi tree navigation forces OFF even when the destination branch had ON");
+	assert.equal(session.sessionManager.getBranch().filter(e => e.type === "custom" && e.customType === "computer-use-mode-v1").at(-1).data.enabled, false);
+	await session.prompt("/computer-use on");
+	assert.equal(activeDesktop().length, 18, "tree navigation requires an explicit new ON");
 	await session.prompt("/computer-use toggle");
-	const offPrompt = await session.extensionRunner.emitBeforeAgentStart("обикновен въпрос", undefined, { cwd });
+	const offPrompt = await before("обикновен въпрос");
 	assert.equal(offPrompt.systemPromptOptions.sections.computer_use_mode, undefined);
 	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"], "toggle OFF withdraws observations");
 	assert.equal((await toolCall("desktop_stop", "off-stop"))?.block, undefined, "emergency Stop is available while OFF");
@@ -203,7 +211,7 @@ try {
 	assert.equal(existsSync(debugDirectory), false, "debug cannot write without a settled task");
 	// Reproduce starting Pi on an existing branch with a stored ON entry.
 	await session.extensionRunner.emit({ type: "session_start", reason: "startup" });
-	const freshStartup = await session.extensionRunner.emitBeforeAgentStart("ordinary prompt", undefined, { cwd });
+	const freshStartup = await before("ordinary prompt");
 	assert.equal(freshStartup.systemPromptOptions.sections.computer_use_mode, undefined, "fresh Pi startup must default OFF even on a saved ON branch");
 	assert.deepEqual(activeDesktop(), ["desktop_stop", "desktop_ping", "desktop_metrics"]);
 	assert.match((await toolCall("desktop_observe", "restarted-off"))?.reason ?? "", /OFF/,
@@ -212,7 +220,7 @@ try {
 	assert.equal(debugPrefs().at(-1).data.enabled, false, "fresh startup must reset debug ON as well");
 	assert.equal(existsSync(debugDirectory), false, "no OFF ordinary prompt or command wrote a report");
 	await session.reload();
-	const stillOff = await session.extensionRunner.emitBeforeAgentStart("ordinary prompt", undefined, { cwd });
+	const stillOff = await before("ordinary prompt");
 	assert.equal(stillOff.systemPromptOptions.sections.computer_use_mode, undefined, "reload must not resurrect old ON state");
 	await session.reload();
 	assert.deepEqual(extensionErrors, [], "real event handlers must not fail");
