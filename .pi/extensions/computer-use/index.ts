@@ -1,4 +1,5 @@
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { loadBrowserDockerRuntime } from "./runtime-loader.mjs";
 import { registerComputerUseCommand } from "./command.js";
 import { registerComputerUseTools } from "./tools.js";
 import { DesktopWorkflow } from "./workflow.js";
@@ -11,8 +12,15 @@ import { ComputerUseDebug } from "./debug.js";
 import { DesktopTarget } from "./target.js";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 
-/** Register model-callable tools for the local computer-use daemon. */
-export default function computerUseExtension(pi: ExtensionAPI): void {
+/** Reload the native ESM runtime by its exact on-disk source identity. Plain
+ * imports keep the first .mjs namespace cached across Pi /reload in the same
+ * process, leaving newly added safety/claim methods unavailable. Reading the
+ * module source here runs no process, browser, timer or Docker operation. */
+export default async function computerUseExtension(pi: ExtensionAPI): Promise<void> {
+	const BrowserDockerRuntime = await loadBrowserDockerRuntime();
+	if (typeof BrowserDockerRuntime?.prototype?.acquireControl !== "function" ||
+		typeof BrowserDockerRuntime.prototype.releaseControl !== "function")
+		throw new Error("Browser runtime lacks shared control safety methods; reload a compatible extension before desktop use.");
 	const mode = new ComputerUseMode(pi);
 	let context: ExtensionContext | undefined;
 	let target: DesktopTarget;
@@ -20,7 +28,7 @@ export default function computerUseExtension(pi: ExtensionAPI): void {
 		if (!context) throw new Error("No active Pi session for desktop lease");
 		return target.lease(request, context);
 	});
-	target = new DesktopTarget(pi, mode, workflow);
+	target = new DesktopTarget(pi, mode, workflow, sessionId => new BrowserDockerRuntime({ sessionId }));
 	registerComputerUseTools(pi, workflow, undefined, target);
 	const loadout = new DesktopLoadout(pi);
 	const routing = new ComputerUseRouting(pi, mode, available => loadout.setRoutingAvailable(available));

@@ -40,7 +40,7 @@ const extension = await jiti.import(extensionPath, { default: true });
 const tools = new Map();
 const modelTextChars = new Map();
 const harness = extensionHarness(tools);
-extension(harness.pi);
+await extension(harness.pi);
 for (const name of ["desktop_ping", "desktop_wait", "desktop_batch", "desktop_dirty_regions", "desktop_search_seen"])
 	assert.ok(tools.has(name), `${name} was not registered`);
 

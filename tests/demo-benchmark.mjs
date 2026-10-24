@@ -54,7 +54,7 @@ async function invoke(name, params = {}) {
 }
 try {
   const extension = await jiti.import(path.join(root, '.pi/extensions/computer-use/index.ts'), { default: true });
-  extension(harness.pi);
+  await extension(harness.pi);
   await harness.emit('before_agent_start');
   // Wait for the actual socket; no desktop input until the dialog is observed.
   for (let i = 0; i < 60; i++) { if (existsSync(socket)) break; await pause(50); }

@@ -2,7 +2,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { lstat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { request as httpRequest } from "node:http";
-import { BrowserDockerRuntime } from "../../../scripts/browser-docker.mjs";
+import type { BrowserDockerRuntime } from "../../../scripts/browser-docker.mjs";
 import { ComputerUseClient } from "./client.js";
 import { DesktopDaemonStartup } from "./daemon.js";
 import { DaemonVersion } from "./version.js";
@@ -58,7 +58,9 @@ export class DesktopTarget {
  private readonly host = new DesktopDaemonStartup();
  constructor(private readonly pi: ExtensionAPI, private readonly mode: ComputerUseMode,
   private readonly workflow: DesktopWorkflow,
-  private readonly runtimeFactory: (sessionId: string) => Runtime = sessionId => new BrowserDockerRuntime({ sessionId }),
+  private readonly runtimeFactory: (sessionId: string) => Runtime = () => {
+   throw new Error("Browser runtime was not initialized by the extension loader; Computer use remains OFF.");
+  },
   private readonly viewerHealth: (url: string) => Promise<void> = checkViewer) {}
  label(ctx: ExtensionContext): void { this.mode.setTargetLabel(this.selected === "docker" ? "Docker browser" : "Host desktop", ctx); }
  restore(ctx: ExtensionContext): void {

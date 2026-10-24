@@ -227,7 +227,7 @@ try {
 	const { handlers, on, count } = listenerRegistry();
 	const commands = new Map();
 	const sent = [];
-	extension({ registerTool: (tool) => { tools.set(tool.name, tool); activeTools.push(tool.name); }, registerVirtualModel: () => {},
+	await extension({ registerTool: (tool) => { tools.set(tool.name, tool); activeTools.push(tool.name); }, registerVirtualModel: () => {},
 		registerCommand: (name, options) => commands.set(name, options),
 		getAllTools: () => [...tools.keys()].map((name) => ({ name })),
 		getActiveTools: () => [...activeTools],
@@ -706,7 +706,7 @@ try {
 	const launchCommands = new Map();
 	let launchActive = [];
 	const { handlers: launchHandlers, on: onLaunch } = listenerRegistry();
-	extension({ registerTool: (tool) => launchTools.set(tool.name, tool), registerCommand: (name, cmd) => launchCommands.set(name, cmd),
+	await extension({ registerTool: (tool) => launchTools.set(tool.name, tool), registerCommand: (name, cmd) => launchCommands.set(name, cmd),
 		getAllTools: () => [...launchTools.keys()].map(name => ({ name })), getActiveTools: () => launchActive,
 		setActiveTools: tools => { launchActive = tools; },
 		registerVirtualModel: () => {}, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),
@@ -797,7 +797,7 @@ try {
 	const legacyTools = new Map(), legacyCommands = new Map();
 	let legacyActive = [];
 	const { handlers: legacyHandlers, on: onLegacy } = listenerRegistry();
-	extension({ registerTool: (tool) => legacyTools.set(tool.name, tool), registerCommand: (name, cmd) => legacyCommands.set(name, cmd),
+	await extension({ registerTool: (tool) => legacyTools.set(tool.name, tool), registerCommand: (name, cmd) => legacyCommands.set(name, cmd),
 		getAllTools: () => [...legacyTools.keys()].map(name => ({ name })), getActiveTools: () => legacyActive,
 		setActiveTools: tools => { legacyActive = tools; },
 		registerVirtualModel: () => {}, appendEntry: (customType, data) => entries.push({ type: "custom", customType, data }),

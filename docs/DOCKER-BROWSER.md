@@ -67,6 +67,8 @@ Private runtime records, image/source fingerprint, lifecycle/control locks and p
 
 Treat the entire profile volume as sensitive: it may contain live cookies, saved passwords and account data. Do not dump, log, publish or upload it. Source fingerprinting reads only trusted Docker build inputs and Rust sources, never profiles, `.git`, transcripts or private runtime data.
 
+If an older extension reported **“Shared browser control is unavailable”** immediately after an update, its native `.mjs` runtime could have remained cached across Pi `/reload`. The extension now loads that module by its on-disk source hash on each factory load. Run `/reload` once after this fix, then `/browser use`; no container/profile deletion, cache clearing, Pi restart or Docker rebuild is required for this loader fix. A real Pi same-process reload regression verifies that changed control methods are actually refreshed, not just that the command exists.
+
 A killed build can leave a lifecycle lock; a crashed Pi process can leave a control claim. Such uncertain claims are not stolen automatically. Verify the prior owner/operation ended before tightly scoped manual recovery. An uncertain Docker create ID is not adopted by name. No broad prune or unrelated container removal is used.
 
 ## Verification
@@ -77,6 +79,7 @@ Fast source/isolated IPC fixtures:
 node tests/test-browser-docker-runtime.mjs
 node tests/test-browser-use.mjs
 node tests/test-docker-browser-target.mjs
+node tests/test-browser-runtime-reload.mjs
 ```
 
 They cover cached preparation, shared profile/ownership adoption, competing control claims, explicit ON/OFF, cancellation during build/start, legacy upgrade, image replacement, pause/resume, socket substitution and no host fallback.

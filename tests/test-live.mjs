@@ -32,7 +32,7 @@ const extensionPath = path.resolve(".pi/extensions/computer-use/index.ts");
 const extension = await jiti.import(extensionPath, { default: true });
 const tools = new Map();
 const harness = extensionHarness(tools);
-extension(harness.pi);
+await extension(harness.pi);
 for (const name of ["desktop_ping", "desktop_observe", "desktop_changes"])
 	assert.ok(tools.has(name), `${name} was not registered`);
 

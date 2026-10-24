@@ -234,6 +234,7 @@ node tests/test-launch-app.mjs
 node tests/test-browser-docker-runtime.mjs
 node tests/test-browser-use.mjs
 node tests/test-docker-browser-target.mjs
+node tests/test-browser-runtime-reload.mjs
 ```
 
 Node integration tests require the compatible Pi SDK. They prefer `PI_CODING_AGENT_PACKAGE` (path to its `package.json`) or `PI_CODEX_ULTRA_RELEASE_ROOT`; otherwise they search the local Pi Codex Ultra release installation. Core notification tests inject subprocess mocks and do not send real notifications. GUI test scripts are optional and described separately; inspect their scope before running them. GitHub CI runs native Rust checks without controlling a user's desktop.
