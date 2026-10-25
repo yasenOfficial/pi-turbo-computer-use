@@ -453,6 +453,7 @@ test('GC of pinned v2 image allows verified metadata and cleanup, but refuses ta
   delete oldState.runtimeRevision;
   await fs.writeFile(runtime.file, JSON.stringify(oldState));
   mock.state.HostConfig.RestartPolicy.Name = 'no';
+  assert.equal((await reload().status()).imageId, IMAGE_ID);
   mock.missingV2Image = true;
   assert.equal((await reload().status()).imageId, IMAGE_ID);
   mock.state.Config.Entrypoint.push('/foreign');

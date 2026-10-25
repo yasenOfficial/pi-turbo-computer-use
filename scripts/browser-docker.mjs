@@ -449,7 +449,7 @@ export class BrowserDockerRuntime {
     // An old image may have been garbage-collected while its container runs.
     // Its pinned container ID/image ID, labels, UID and mounts remain mandatory.
     const port = containerSafe(info, s, ipc, this.uid,
-      !image && s.schema === SCHEMA && s.runtimeRevision === undefined);
+      s.schema === SCHEMA && s.runtimeRevision === undefined);
     if (s.schema === SCHEMA) await this.#profile(s, false, recordKey);
     return { info, port };
   }
