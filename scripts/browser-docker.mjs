@@ -150,6 +150,7 @@ function validState(s, key) {
     !IMAGE_ID.test(s.imageId) || !s.socketPath?.endsWith(`/${s.id}/ipc/pi-computer.sock`) ||
     !path.isAbsolute(s.socketPath) || (s.networkId !== null && !ID.test(s.networkId)) ||
     (s.schema !== undefined && s.schema !== SCHEMA) ||
+    (s.runtimeRevision !== undefined && s.runtimeRevision !== 'restart-policy-v1') ||
     (s.schema === SCHEMA && !/^pi-computer-profile-[0-9a-f]{64}$/.test(s.profileVolume))) deny();
 }
 function imageSafe(image, uid, legacy = false) {
@@ -158,7 +159,7 @@ function imageSafe(image, uid, legacy = false) {
     image.Config?.User !== `${uid}:${uid}` || image.Config?.Entrypoint?.length !== 1 ||
     image.Config.Entrypoint[0] !== '/usr/local/bin/browser-entrypoint') deny();
 }
-function containerSafe(info, s, ipc, uid) {
+function containerSafe(info, s, ipc, uid, allowLegacyRestartPolicy = false) {
   const persistent = s.schema === SCHEMA;
   const mounts = info.Mounts || [];
   const bind = mounts.find(m => m.Destination === '/ipc');
@@ -171,7 +172,10 @@ function containerSafe(info, s, ipc, uid) {
     info.Config.Entrypoint[0] !== '/usr/local/bin/browser-entrypoint' ||
     info.HostConfig?.Privileged !== false || info.HostConfig?.ReadonlyRootfs !== true ||
     info.HostConfig?.NetworkMode !== s.network || info.HostConfig?.PidMode !== '' ||
-    info.HostConfig?.IpcMode !== 'private' || info.HostConfig?.PidsLimit !== 512 ||
+    info.HostConfig?.IpcMode !== 'private' ||
+    !((info.HostConfig?.RestartPolicy?.Name === 'unless-stopped' && info.HostConfig.RestartPolicy.MaximumRetryCount === 0) ||
+      (allowLegacyRestartPolicy && info.HostConfig?.RestartPolicy?.Name === 'no' && info.HostConfig.RestartPolicy.MaximumRetryCount === 0)) ||
+    info.HostConfig?.PidsLimit !== 512 ||
     info.HostConfig?.Memory !== 2147483648 || info.HostConfig?.MemorySwap !== 2147483648 ||
     info.HostConfig?.NanoCpus !== 2000000000 ||
     info.HostConfig?.ShmSize !== 268435456 || info.HostConfig?.AutoRemove !== false ||
@@ -444,7 +448,8 @@ export class BrowserDockerRuntime {
     if (!info) return null;
     // An old image may have been garbage-collected while its container runs.
     // Its pinned container ID/image ID, labels, UID and mounts remain mandatory.
-    const port = containerSafe(info, s, ipc, this.uid);
+    const port = containerSafe(info, s, ipc, this.uid,
+      !image && s.schema === SCHEMA && s.runtimeRevision === undefined);
     if (s.schema === SCHEMA) await this.#profile(s, false, recordKey);
     return { info, port };
   }
@@ -596,7 +601,8 @@ export class BrowserDockerRuntime {
         retained.name !== `pi-computer-profile-${retained.volumeKey ?? this.key}` ||
         !FINGERPRINT.test(retained.volumeKey ?? this.key))) deny();
     const s = { key: this.key, id, name, network, containerId: null, networkId: null, imageId: image.Id,
-      schema: SCHEMA, profileVolume: retained?.name ?? `pi-computer-profile-${this.key}`,
+      schema: SCHEMA, runtimeRevision: 'restart-policy-v1',
+      profileVolume: retained?.name ?? `pi-computer-profile-${this.key}`,
       socketPath: path.join(ipc, 'pi-computer.sock') };
     // The volume is the only durable browser data. It is never removed by stop.
     const migration = await record(this.migrationFile, this.uid);
@@ -609,7 +615,7 @@ export class BrowserDockerRuntime {
     await this.#network(s);
     const cid = (await this.docker(['run', '--detach', '--name', name, '--label', `${OWNER}=v1`,
       '--label', `${OWNER}.schema=${SCHEMA}`, '--label', `org.pi-computer.browser.id=${id}`,
-      '--network', network, '--publish', '127.0.0.1::6080', '--user', `${this.uid}:${this.uid}`, '--cap-drop', 'ALL',
+      '--network', network, '--restart', 'unless-stopped', '--publish', '127.0.0.1::6080', '--user', `${this.uid}:${this.uid}`, '--cap-drop', 'ALL',
       '--security-opt', 'no-new-privileges', '--read-only', '--pids-limit', '512', '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--shm-size', '256m',
       '--tmpfs', `/tmp:rw,nosuid,nodev,size=128m,uid=${this.uid},gid=${this.uid},mode=700`,
       '--tmpfs', `/run/user/browser:rw,nosuid,nodev,size=32m,uid=${this.uid},gid=${this.uid},mode=700`,

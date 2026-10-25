@@ -48,6 +48,7 @@ function fake() {
         Config: { Image: IMAGE_ID, User: value('--user'), Entrypoint: ['/usr/local/bin/browser-entrypoint'],
           Labels: { [owner]: 'v1', [`${owner}.schema`]: 'persistent-noauth-v2', 'org.pi-computer.browser.id': id }, Env: ['DISPLAY=:99', 'HOME=/home/browser'] },
         HostConfig: { Privileged: false, ReadonlyRootfs: true, NetworkMode: value('--network'), PidMode: '', IpcMode: 'private',
+          RestartPolicy: { Name: 'unless-stopped', MaximumRetryCount: 0 },
           PidsLimit: 512, Memory: 2147483648, MemorySwap: 2147483648, NanoCpus: 2000000000,
           ShmSize: 268435456, AutoRemove: false,
           CapDrop: ['ALL'], CapAdd: null,
@@ -106,7 +107,8 @@ test('import is inert; explicit build, isolated run, reload, viewer and retained
   assert.ok(handle.socketPath.startsWith(path.join(dir, 'runtime/pi-computer-docker')));
   assert.ok(!JSON.stringify(handle).includes('aB3+/cZ9'));
   const run = mock.calls.find(a => a[0] === 'run');
-  for (const flag of ['--read-only', '--cap-drop', '--security-opt', '--pids-limit', '--memory', '--cpus', '--network', '--mount', '--publish']) assert.ok(run.includes(flag), flag);
+  for (const flag of ['--read-only', '--cap-drop', '--security-opt', '--pids-limit', '--memory', '--cpus', '--network', '--restart', '--mount', '--publish']) assert.ok(run.includes(flag), flag);
+  assert.equal(run[run.indexOf('--restart') + 1], 'unless-stopped');
   assert.equal(run[run.indexOf('--pids-limit') + 1], '512');
   assert.equal(run[run.indexOf('--memory') + 1], '2g');
   assert.equal(run[run.indexOf('--memory-swap') + 1], '2g');
@@ -436,7 +438,7 @@ test('failed transfer invokes fixed Firefox thaw and quarantines partial volume'
 test('GC of pinned legacy image allows strict container inspection', async () => fixture(async ({ runtime, reload, mock }) => {
   await runtime.build(); await runtime.start();
   const state = JSON.parse(await fs.readFile(runtime.file, 'utf8'));
-  delete state.schema; delete state.profileVolume; state.imageId = OLD_IMAGE_ID;
+  delete state.schema; delete state.profileVolume; delete state.runtimeRevision; state.imageId = OLD_IMAGE_ID;
   await fs.writeFile(runtime.file, JSON.stringify(state));
   mock.state.Image = OLD_IMAGE_ID; mock.state.Config.Image = OLD_IMAGE_ID;
   delete mock.state.Config.Labels[`${owner}.schema`]; mock.state.Mounts.pop();
@@ -447,6 +449,10 @@ test('GC of pinned legacy image allows strict container inspection', async () =>
 }));
 test('GC of pinned v2 image allows verified metadata and cleanup, but refuses tampering', async () => fixture(async ({ runtime, reload, mock }) => {
   await runtime.build(); await runtime.start();
+  const oldState = JSON.parse(await fs.readFile(runtime.file, 'utf8'));
+  delete oldState.runtimeRevision;
+  await fs.writeFile(runtime.file, JSON.stringify(oldState));
+  mock.state.HostConfig.RestartPolicy.Name = 'no';
   mock.missingV2Image = true;
   assert.equal((await reload().status()).imageId, IMAGE_ID);
   mock.state.Config.Entrypoint.push('/foreign');
@@ -465,6 +471,13 @@ test('GC of pinned v2 image allows verified metadata and cleanup, but refuses ta
   const launches = mock.calls.filter(a => a[0] === 'run').length;
   await assert.rejects(() => reload().start(), 'Missing image must not launch a new container');
   assert.equal(mock.calls.filter(a => a[0] === 'run').length, launches);
+}));
+test('unexpected restart-policy changes fail closed', async () => fixture(async ({ runtime, mock }) => {
+  await runtime.build(); await runtime.start();
+  mock.state.HostConfig.RestartPolicy.Name = 'no';
+  await assert.rejects(() => runtime.status(), /Unsafe browser/);
+  await assert.rejects(() => runtime.stop(), /Unsafe browser/);
+  assert.ok(!mock.calls.some(a => a[0] === 'rm'));
 }));
 test('crashed/stopped owned container with cleared published port can still be inspected and removed', async () => fixture(async ({ runtime, reload, mock }) => {
   await runtime.build(); await runtime.start();
