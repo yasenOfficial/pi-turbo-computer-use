@@ -147,6 +147,7 @@ async function save(file, value) {
 function validState(s, key) {
   if (!s || s.key !== key || !UUID.test(s.id) || s.name !== `pi-computer-browser-${s.id}` ||
     s.network !== `pi-computer-net-${s.id}` || (s.containerId !== null && !ID.test(s.containerId)) ||
+    (s.clipboardBridge !== undefined && typeof s.clipboardBridge !== 'boolean') ||
     !IMAGE_ID.test(s.imageId) || !s.socketPath?.endsWith(`/${s.id}/ipc/pi-computer.sock`) ||
     !path.isAbsolute(s.socketPath) || (s.networkId !== null && !ID.test(s.networkId)) ||
     (s.schema !== undefined && s.schema !== SCHEMA) ||
@@ -163,6 +164,7 @@ function containerSafe(info, s, ipc, uid, allowLegacyRestartPolicy = false) {
   const persistent = s.schema === SCHEMA;
   const mounts = info.Mounts || [];
   const bind = mounts.find(m => m.Destination === '/ipc');
+  const bridge = mounts.find(m => m.Destination === '/ipc/bridge');
   const profile = mounts.find(m => m.Destination === '/home/browser/profile');
   if (info.Id !== s.containerId || info.Name !== `/${s.name}` || info.Image !== s.imageId ||
     info.Config?.Image !== s.imageId || info.Config?.Labels?.[OWNER] !== 'v1' ||
@@ -183,16 +185,21 @@ function containerSafe(info, s, ipc, uid, allowLegacyRestartPolicy = false) {
     info.HostConfig?.Devices?.length || info.HostConfig?.DeviceRequests?.length ||
     info.HostConfig?.VolumesFrom?.length || info.HostConfig?.Binds?.length ||
     info.HostConfig?.SecurityOpt?.length !== 1 || info.HostConfig.SecurityOpt[0] !== 'no-new-privileges' ||
-    mounts.length !== (persistent ? 2 : 1) || bind?.Type !== 'bind' || bind.Source !== ipc || bind.RW !== true ||
+    mounts.length !== (persistent ? 2 : 1) + (s.clipboardBridge === true ? 1 : 0) || bind?.Type !== 'bind' || bind.Source !== ipc || bind.RW !== true ||
+    (s.clipboardBridge === true && (bridge?.Type !== 'bind' || bridge.Source !== path.join(path.dirname(ipc), 'bridge') || bridge.RW !== true)) ||
+    (s.clipboardBridge !== true && bridge) ||
     (persistent && (profile?.Type !== 'volume' || profile.Name !== s.profileVolume ||
       profile.RW !== true || profile.Driver !== 'local')) ||
     Object.keys(info.HostConfig?.Tmpfs || {}).sort().join(',') !== '/home/browser,/run/user/browser,/tmp' ||
-    (info.Config?.Env || []).some(e => /^(DISPLAY|HOME|XDG_RUNTIME_DIR|XDG_SESSION_TYPE|COMPUTER_USE_SOCKET|COMPUTER_USE_OVERLAY|MOZ_ENABLE_WAYLAND|MOZ_ACCESSIBILITY_ENABLED|NO_AT_BRIDGE|GTK_MODULES|GNOME_ACCESSIBILITY|ACCESSIBILITY_ENABLED|GSETTINGS_BACKEND|GTK_USE_PORTAL|TOKIO_WORKER_THREADS)=/.test(e) && ![
+    (info.Config?.Env || []).some(e => /^(DISPLAY|HOME|XDG_RUNTIME_DIR|XDG_SESSION_TYPE|COMPUTER_USE_SOCKET|COMPUTER_USE_CLIPBOARD_BRIDGE|COMPUTER_USE_OVERLAY|MOZ_ENABLE_WAYLAND|MOZ_ACCESSIBILITY_ENABLED|NO_AT_BRIDGE|GTK_MODULES|GNOME_ACCESSIBILITY|ACCESSIBILITY_ENABLED|GSETTINGS_BACKEND|GTK_USE_PORTAL|TOKIO_WORKER_THREADS)=/.test(e) && ![
       'DISPLAY=:99', 'HOME=/home/browser', 'XDG_RUNTIME_DIR=/run/user/browser', 'COMPUTER_USE_SOCKET=/ipc/pi-computer.sock',
-      'COMPUTER_USE_OVERLAY=0', 'XDG_SESSION_TYPE=x11', 'MOZ_ENABLE_WAYLAND=0', 'MOZ_ACCESSIBILITY_ENABLED=1', 'NO_AT_BRIDGE=0',
+      'COMPUTER_USE_CLIPBOARD_BRIDGE=/ipc/bridge/clipboard-bridge.sock', 'COMPUTER_USE_OVERLAY=0', 'XDG_SESSION_TYPE=x11', 'MOZ_ENABLE_WAYLAND=0', 'MOZ_ACCESSIBILITY_ENABLED=1', 'NO_AT_BRIDGE=0',
       'GTK_MODULES=gail:atk-bridge', 'GNOME_ACCESSIBILITY=1', 'ACCESSIBILITY_ENABLED=1',
       'GSETTINGS_BACKEND=memory', 'GTK_USE_PORTAL=0', 'TOKIO_WORKER_THREADS=2',
-    ].includes(e))) deny();
+    ].includes(e)) ||
+    (s.clipboardBridge === true
+      ? !(info.Config?.Env || []).includes('COMPUTER_USE_CLIPBOARD_BRIDGE=/ipc/bridge/clipboard-bridge.sock')
+      : (info.Config?.Env || []).some(e => e.startsWith('COMPUTER_USE_CLIPBOARD_BRIDGE=')))) deny();
   const bindings = info.HostConfig?.PortBindings?.['6080/tcp'];
   const published = info.NetworkSettings?.Ports?.['6080/tcp'];
   // Docker may clear NetworkSettings.Ports after a crash/stop. The immutable
@@ -236,6 +243,46 @@ export class BrowserDockerRuntime {
     this.profileFile = path.join(stateDir, `profile-${this.key}.json`);
     this.migrationFile = path.join(stateDir, `migration-${this.key}.json`);
     this.base = path.join(runtimeDir, 'pi-computer-docker');
+    // Explicit opt-in. The host bridge never mounts X11 resources into Docker.
+    this.clipboardBridge = process.env.PI_CLIPBOARD_BRIDGE === '1';
+    this.bridgeProcess = undefined;
+  }
+  #bridgePath(s) { return path.join(this.base, s.id, 'bridge', 'clipboard-bridge.sock'); }
+  async #startBridge(s) {
+    if (s.clipboardBridge !== true) return;
+    if (this.bridgeProcess && !this.bridgeProcess.killed) return;
+    const socket = this.#bridgePath(s);
+    await secureDir(path.join(this.base, s.id), this.uid);
+    await secureDir(path.dirname(socket), this.uid);
+    try { await fs.lstat(socket); throw new Error('clipboard bridge socket already exists'); }
+    catch (error) { if (error?.code !== 'ENOENT') throw error; }
+    const binary = process.env.COMPUTER_USE_DAEMON || path.join(this.root, 'daemon/target/release/pi-turbo-daemon');
+    let info;
+    try { info = await fs.stat(binary); } catch { throw new Error('Host clipboard bridge daemon binary unavailable; no Docker browser started'); }
+    if (!info.isFile() || (info.mode & 0o111) === 0) throw new Error('Host clipboard bridge daemon binary is not executable; no Docker browser started');
+    const child = spawn(binary, ['--clipboard-bridge-server', socket], { stdio: 'ignore' });
+    this.bridgeProcess = child;
+    child.once('exit', () => { if (this.bridgeProcess === child) this.bridgeProcess = undefined; });
+    child.once('error', () => { if (this.bridgeProcess === child) this.bridgeProcess = undefined; });
+    const deadline = Date.now() + 3000;
+    while (Date.now() < deadline) {
+      try {
+        const stat = await fs.lstat(socket);
+        if (stat.isSocket() && !stat.isSymbolicLink() && stat.uid === this.uid && (stat.mode & 0o7777) === 0o600) return;
+      } catch {}
+      if (child.exitCode !== null) break;
+      await new Promise(resolve => setTimeout(resolve, 25));
+    }
+    try { child.kill('SIGTERM'); } catch {}
+    this.bridgeProcess = undefined;
+    throw new Error('Host clipboard bridge did not become ready; no Docker browser started');
+  }
+  async #stopBridge() {
+    const child = this.bridgeProcess;
+    this.bridgeProcess = undefined;
+    if (!child || child.killed || child.exitCode !== null) return;
+    try { child.kill('SIGTERM'); } catch {}
+    await new Promise(resolve => { const timer = setTimeout(resolve, 1000); child.once('exit', () => { clearTimeout(timer); resolve(); }); });
   }
   async #dirs() {
     await secureDir(this.runtimeDir, this.uid);
@@ -429,6 +476,7 @@ export class BrowserDockerRuntime {
     if (s.socketPath !== path.join(ipc, 'pi-computer.sock')) deny();
     await secureDir(path.join(this.base, s.id), this.uid);
     await secureDir(ipc, this.uid);
+    if (s.clipboardBridge === true) await secureDir(path.join(this.base, s.id, 'bridge'), this.uid);
     // The host IPC client must never follow a swapped symlink to a host
     // daemon. During startup the socket may not exist yet.
     let socket;
@@ -451,6 +499,7 @@ export class BrowserDockerRuntime {
     const port = containerSafe(info, s, ipc, this.uid,
       s.schema === SCHEMA && s.runtimeRevision === undefined);
     if (s.schema === SCHEMA) await this.#profile(s, false, recordKey);
+    if (s.clipboardBridge === true && info.State?.Running) await this.#startBridge(s);
     return { info, port };
   }
   #importHelper(info, helperId, name, volume, imageId) {
@@ -601,7 +650,7 @@ export class BrowserDockerRuntime {
         retained.name !== `pi-computer-profile-${retained.volumeKey ?? this.key}` ||
         !FINGERPRINT.test(retained.volumeKey ?? this.key))) deny();
     const s = { key: this.key, id, name, network, containerId: null, networkId: null, imageId: image.Id,
-      schema: SCHEMA, runtimeRevision: 'restart-policy-v1',
+      schema: SCHEMA, runtimeRevision: 'restart-policy-v1', clipboardBridge: this.clipboardBridge,
       profileVolume: retained?.name ?? `pi-computer-profile-${this.key}`,
       socketPath: path.join(ipc, 'pi-computer.sock') };
     // The volume is the only durable browser data. It is never removed by stop.
@@ -613,7 +662,9 @@ export class BrowserDockerRuntime {
     const nid = (await this.docker(['network', 'create', '--driver', 'bridge', '--label', `${OWNER}=v1`, '--label', `org.pi-computer.browser.id=${id}`, network])).trim();
     if (!ID.test(nid)) deny(); s.networkId = nid; await save(this.file, s);
     await this.#network(s);
-    const cid = (await this.docker(['run', '--detach', '--name', name, '--label', `${OWNER}=v1`,
+    if (s.clipboardBridge) await this.#startBridge(s);
+    let cid;
+    try { cid = (await this.docker(['run', '--detach', '--name', name, '--label', `${OWNER}=v1`,
       '--label', `${OWNER}.schema=${SCHEMA}`, '--label', `org.pi-computer.browser.id=${id}`,
       '--network', network, '--restart', 'unless-stopped', '--publish', '127.0.0.1::6080', '--user', `${this.uid}:${this.uid}`, '--cap-drop', 'ALL',
       '--security-opt', 'no-new-privileges', '--read-only', '--pids-limit', '512', '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--shm-size', '256m',
@@ -621,9 +672,15 @@ export class BrowserDockerRuntime {
       '--tmpfs', `/run/user/browser:rw,nosuid,nodev,size=32m,uid=${this.uid},gid=${this.uid},mode=700`,
       '--tmpfs', `/home/browser:rw,nosuid,nodev,size=1g,uid=${this.uid},gid=${this.uid},mode=700`,
       '--mount', `type=bind,src=${ipc},dst=/ipc`,
+      ...(s.clipboardBridge ? ['--mount', `type=bind,src=${path.join(this.base, s.id, 'bridge')},dst=/ipc/bridge`] : []),
       '--mount', `type=volume,src=${s.profileVolume},dst=/home/browser/profile`,
       '--env', 'COMPUTER_USE_SOCKET=/ipc/pi-computer.sock',
+      ...(s.clipboardBridge ? ['--env', 'COMPUTER_USE_CLIPBOARD_BRIDGE=/ipc/bridge/clipboard-bridge.sock'] : []),
       '--env', 'COMPUTER_USE_OVERLAY=0', s.imageId])).trim();
+    } catch (error) {
+      await this.#stopBridge();
+      throw error;
+    }
     if (!ID.test(cid)) deny(); s.containerId = cid; await save(this.file, s);
     const checked = await this.#checked(s);
     if (!checked?.info.State?.Running) throw new Error('Browser container exited during startup; stop it before retrying');
@@ -698,6 +755,7 @@ export class BrowserDockerRuntime {
       await this.#network(s);
       await this.docker(['network', 'rm', s.networkId]);
     }
+    await this.#stopBridge();
     await secureDir(path.join(this.base, s.id), this.uid);
     await secureDir(path.join(this.base, s.id, 'ipc'), this.uid);
     await fs.rm(path.join(this.base, s.id), { recursive: true, force: true });

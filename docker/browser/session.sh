@@ -29,18 +29,18 @@ cleanup() {
       kill -KILL "$fp" 2>/dev/null || :
     fi
   fi
-  for child in "${dp:-}" "${wp:-}" "${vp:-}" "${op:-}" "$xpid"; do
+  for child in "${dp:-}" "${rp:-}" "${wp:-}" "${vp:-}" "${op:-}" "$xpid"; do
     [[ -n "$child" ]] && kill -TERM "$child" 2>/dev/null || :
   done
   for attempt in {1..20}; do
     alive=0
-    for child in "${dp:-}" "${wp:-}" "${vp:-}" "${op:-}" "$xpid"; do
+    for child in "${dp:-}" "${rp:-}" "${wp:-}" "${vp:-}" "${op:-}" "$xpid"; do
       [[ -z "$child" ]] || { kill -0 "$child" 2>/dev/null && alive=1 || :; }
     done
     (( alive )) || break
     sleep 0.1
   done
-  for child in "${dp:-}" "${wp:-}" "${vp:-}" "${op:-}" "$xpid"; do
+  for child in "${dp:-}" "${rp:-}" "${wp:-}" "${vp:-}" "${op:-}" "$xpid"; do
     [[ -n "$child" ]] && kill -KILL "$child" 2>/dev/null || :
   done
   wait 2>/dev/null || :
@@ -73,6 +73,11 @@ for property in IsEnabled ScreenReaderEnabled; do
     --method org.freedesktop.DBus.Properties.Set org.a11y.Status "$property" '<true>' \
     >/dev/null 2>&1
 done
+# An enabled bridge uses only the private /ipc socket; it never opens a host
+# X socket or receives host DISPLAY/XAUTHORITY. It is a critical child.
+if [[ -n "${COMPUTER_USE_CLIPBOARD_BRIDGE:-}" ]]; then
+  /usr/local/bin/pi-turbo-daemon --clipboard-bridge-relay "$COMPUTER_USE_CLIPBOARD_BRIDGE" >/dev/null 2>&1 & rp=$!
+fi
 # No VNC password: the viewer is explicitly unauthenticated. Docker publishes
 # 6080 on host 127.0.0.1 only; VNC itself is container-loopback only.
 x11vnc -display :99 -localhost -rfbport 5900 -forever -shared -nopw -quiet >/dev/null 2>&1 & vp=$!
@@ -85,12 +90,14 @@ while :; do
   /usr/local/bin/pi-turbo-daemon >/dev/null 2>&1 & dp=$!
   printf '%s\n' "$dp" > "$XDG_RUNTIME_DIR/browser-daemon.pid"
   ended= status=0
-  wait -n -p ended "$xpid" "$dp" "$vp" "$wp" "$fp" "$op" || status=$?
+  critical=("$xpid" "$dp" "$vp" "$wp" "$fp" "$op")
+  [[ -z "${rp:-}" ]] || critical+=("$rp")
+  wait -n -p ended "${critical[@]}" || status=$?
   rm -f -- "$XDG_RUNTIME_DIR/browser-daemon.pid"
   if (( !restart_requested )); then
     role=unknown
     case "$ended" in
-      "$xpid") role=xvfb ;; "$dp") role=daemon ;; "$vp") role=vnc ;;
+      "$xpid") role=xvfb ;; "$dp") role=daemon ;; "$rp") role=clipboard-bridge-relay ;; "$vp") role=vnc ;;
       "$wp") role=viewer ;; "$fp") role=firefox ;; "$op") role=window-manager ;;
     esac
     # Fixed metadata only: no page URLs, titles, profile paths or stderr.
@@ -99,7 +106,7 @@ while :; do
   fi
   restart_requested=0
   wait "$dp" 2>/dev/null || :
-  for critical in "$xpid" "$vp" "$wp" "$fp" "$op"; do
+  for critical in "$xpid" "${rp:-}" "$vp" "$wp" "$fp" "$op"; do
     kill -0 "$critical" 2>/dev/null || exit 1
   done
 done

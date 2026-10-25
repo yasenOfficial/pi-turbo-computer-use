@@ -29,7 +29,7 @@ const WAIT: Duration = Duration::from_secs(2);
 const MAX_OUTGOING: usize = 8;
 const MAX_OUTGOING_BYTES: usize = 16 * 1024 * 1024;
 
-type Result<T> = std::result::Result<T, &'static str>;
+pub(crate) type Result<T> = std::result::Result<T, &'static str>;
 
 /// The X11 selection protocol is not a Wayland clipboard implementation.
 /// Reject native Wayland sessions before any observation or clipboard worker
@@ -105,7 +105,7 @@ struct Transfer {
     deadline: Instant,
     dispatched: bool,
 }
-struct Worker {
+pub(crate) struct Worker {
     conn: RustConnection,
     window: Window,
     atoms: Atoms,
@@ -117,7 +117,7 @@ struct Worker {
     paste_safety: Option<Safety>,
 }
 impl Worker {
-    fn new() -> Result<Self> {
+    pub(crate) fn new() -> Result<Self> {
         let (conn, screen) = x11rb::connect(None).map_err(|_| "clipboard X11 unavailable")?;
         let atoms = Atoms::new(&conn)?;
         let window = conn
@@ -151,7 +151,7 @@ impl Worker {
             paste_safety: None,
         })
     }
-    fn owner(&self) -> Result<Window> {
+    pub(crate) fn owner(&self) -> Result<Window> {
         self.conn
             .get_selection_owner(self.atoms.clipboard)
             .map_err(|_| "clipboard X11 unavailable")?
@@ -206,7 +206,7 @@ impl Worker {
         }
         self.outgoing.retain(|t| t.deadline > now);
     }
-    fn event(&mut self, event: Event) {
+    pub(crate) fn event(&mut self, event: Event) {
         self.prune_outgoing();
         match event {
             Event::SelectionClear(e) if e.selection == self.atoms.clipboard => {
@@ -372,7 +372,7 @@ impl Worker {
             _ => {}
         }
     }
-    fn pump(&mut self) -> Result<Option<Event>> {
+    pub(crate) fn pump(&mut self) -> Result<Option<Event>> {
         self.conn
             .poll_for_event()
             .map_err(|_| "clipboard X11 unavailable")
@@ -593,6 +593,50 @@ impl Worker {
         self.outgoing.clear();
         self.dispatched = false;
         "restored"
+    }
+
+    pub(crate) fn bridge_window(&self) -> Window {
+        self.window
+    }
+
+    pub(crate) fn bridge_snapshot_text(&mut self, owner: Window) -> Result<String> {
+        let safety = Safety::default();
+        let format = self.receive(self.atoms.utf8, owner, Instant::now() + WAIT, &safety)?;
+        if format.kind != self.atoms.utf8 || format.width != 8 {
+            return Err("clipboard bridge requires UTF-8 text");
+        }
+        if format.bytes.len() > 65_536 {
+            return Err("clipboard bridge text exceeds 65536 bytes");
+        }
+        String::from_utf8(format.bytes).map_err(|_| "clipboard bridge text is not UTF-8")
+    }
+
+    pub(crate) fn bridge_own_text(&mut self, text: &str) -> Result<()> {
+        if text.len() > 65_536 {
+            return Err("clipboard bridge text exceeds 65536 bytes");
+        }
+        let mut offered = HashMap::new();
+        for target in [self.atoms.utf8, self.atoms.text, self.atoms.plain] {
+            offered.insert(
+                target,
+                Format {
+                    kind: target,
+                    width: 8,
+                    bytes: text.as_bytes().to_vec(),
+                },
+            );
+        }
+        if text.chars().all(|c| (c as u32) <= 255) {
+            offered.insert(
+                self.atoms.string,
+                Format {
+                    kind: self.atoms.string,
+                    width: 8,
+                    bytes: text.chars().map(|c| c as u8).collect(),
+                },
+            );
+        }
+        self.own(offered)
     }
 }
 

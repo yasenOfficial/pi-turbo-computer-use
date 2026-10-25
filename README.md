@@ -14,7 +14,7 @@ This is **not a new Pi build, browser plugin, or autonomous nested agent**. It i
 - Breathing blue screen-edge light and a smooth cursor-following halo during desktop work **including model thinking**, with expiring workflow leases and capture suspension.
 - Lazy daemon startup and safety/version validation before UI calls. Authenticated, idle, extension-owned daemons can upgrade gracefully; arbitrary or emergency-stopped processes are never forcibly replaced.
 - **Action required** handoff for MFA/2FA, CAPTCHA, missing/ambiguous login, approval, or a genuine technical blocker. Generic OS notifications contain no task text or credentials. User abort/Stop is silent.
-- Optional **Docker browser target**: isolated Firefox/virtual desktop, private accessibility bus, and localhost-only **passwordless** noVNC viewer and one shared persistent Docker profile volume. Watch or pause/take over without moving the host desktop's pointer or focus. Docker failures never fall back to host; this isolates desktop tools, **not Pi's host shell**. [Setup and limits](docs/DOCKER-BROWSER.md).
+- Optional **Docker browser target**: isolated Firefox/virtual desktop, private accessibility bus, and localhost-only **passwordless** noVNC viewer and one shared persistent Docker profile volume. Watch or pause/take over without moving the host desktop's pointer or focus. An explicit `PI_CLIPBOARD_BRIDGE=1` opt-in synchronizes bounded native X11 clipboard text through a private bridge socket; Docker failures never fall back to host. This isolates desktop tools, **not Pi's host shell**. [Setup and limits](docs/DOCKER-BROWSER.md).
 
 ## Requirements
 

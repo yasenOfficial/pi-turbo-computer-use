@@ -2,6 +2,7 @@ mod accessibility;
 mod apps;
 mod capture;
 mod clipboard;
+mod clipboard_bridge;
 mod config;
 mod feedback;
 mod input;
@@ -27,6 +28,43 @@ use state::{Bounds, Cache, Delta, Node, Snapshot};
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 use std::{path::Path, sync::mpsc};
+
+#[derive(Clone, Copy)]
+enum BridgeMode {
+    Server,
+    Relay,
+}
+
+fn bridge_mode() -> Result<Option<(BridgeMode, String)>> {
+    let args: Vec<_> = std::env::args().collect();
+    let mut found = None;
+    let mut index = 1;
+    while index < args.len() {
+        let mode = match args[index].as_str() {
+            "--clipboard-bridge-server" => Some(BridgeMode::Server),
+            "--clipboard-bridge-relay" => Some(BridgeMode::Relay),
+            _ => None,
+        };
+        if let Some(mode) = mode {
+            if found.is_some() || index + 1 >= args.len() || args[index + 1].is_empty() {
+                bail!("clipboard bridge requires exactly one mode and absolute socket path");
+            }
+            found = Some((mode, args[index + 1].clone()));
+            index += 1;
+        } else if args[index].starts_with("--clipboard-bridge-") {
+            bail!("unknown clipboard bridge mode");
+        }
+        index += 1;
+    }
+    if let Some((mode, path)) = found {
+        if !Path::new(&path).is_absolute() {
+            bail!("clipboard bridge socket path must be absolute");
+        }
+        Ok(Some((mode, path)))
+    } else {
+        Ok(None)
+    }
+}
 use tokio::{
     io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader},
     sync::Mutex,
@@ -203,6 +241,13 @@ async fn main() -> Result<()> {
     // Offline binary identity: no configuration, socket, AT-SPI, or X11 access.
     if std::env::args().any(|arg| arg == "--build-info") {
         println!("{}", serde_json::to_string(&runtime::build_info())?);
+        return Ok(());
+    }
+    if let Some((mode, path)) = bridge_mode()? {
+        match mode {
+            BridgeMode::Server => clipboard_bridge::run_server(Path::new(&path))?,
+            BridgeMode::Relay => clipboard_bridge::run_relay(Path::new(&path))?,
+        }
         return Ok(());
     }
     // Validate configuration before connecting to the desktop or touching a socket.
