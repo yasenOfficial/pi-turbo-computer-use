@@ -164,25 +164,25 @@ fn run_link(mut worker: Worker, mut link: Link, host_side: bool) -> Result<()> {
             observed_owner = Some(worker_window);
         }
         let owner = worker.owner().map_err(|error| anyhow::anyhow!(error))?;
-        if observed_owner != Some(owner) {
-            let first_observation = observed_owner.is_none();
-            observed_owner = Some(owner);
-            if owner != 0 && owner != worker_window && (host_side || remote_initialized) {
-                // A failed read is not retried against the same owner. The
-                // next owner transition is the only new clipboard evidence.
-                if let Ok(text) = worker.bridge_snapshot_text(owner) {
-                    let hash = xxh3_64(text.as_bytes());
-                    if Some(hash) != remote_hash {
-                        link.queue(&text).context("clipboard bridge queue")?;
-                        remote_hash = Some(hash);
-                    }
+        let first_observation = observed_owner.is_none();
+        observed_owner = Some(owner);
+        if owner != 0 && owner != worker_window && (host_side || remote_initialized) {
+            // X11 does not notify a requestor when the same owner replaces
+            // its selection contents. Re-read the bounded text while the
+            // bridge is explicitly active, but only forward changed hashes.
+            // A failed read is harmless and is retried on the next poll.
+            if let Ok(text) = worker.bridge_snapshot_text(owner) {
+                let hash = xxh3_64(text.as_bytes());
+                if Some(hash) != remote_hash {
+                    link.queue(&text).context("clipboard bridge queue")?;
+                    remote_hash = Some(hash);
                 }
-            } else if first_observation && host_side && owner == 0 {
-                // An ownerless host CLIPBOARD is an explicit empty initial
-                // state; stale Docker text must not leak back to host.
-                link.queue("").context("clipboard bridge queue")?;
-                remote_hash = Some(xxh3_64(&[]));
             }
+        } else if first_observation && host_side && owner == 0 {
+            // An ownerless host CLIPBOARD is an explicit empty initial
+            // state; stale Docker text must not leak back to host.
+            link.queue("").context("clipboard bridge queue")?;
+            remote_hash = Some(xxh3_64(&[]));
         }
         link.flush().context("clipboard bridge send")?;
         thread::sleep(POLL);
