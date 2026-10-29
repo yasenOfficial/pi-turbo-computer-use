@@ -10,6 +10,12 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const IMAGE = 'pi-computer-browser:local';
 const OWNER = 'org.pi-computer.browser';
 const SCHEMA = 'persistent-noauth-v2';
+const LEGACY_MEMORY = 2147483648;
+const BROWSER_MEMORY = 4294967296;
+function memorySafe(config) {
+  return (config?.Memory === LEGACY_MEMORY && config.MemorySwap === LEGACY_MEMORY) ||
+    (config?.Memory === BROWSER_MEMORY && config.MemorySwap === BROWSER_MEMORY);
+}
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const ID = /^[0-9a-f]{64}$/;
 const IMAGE_ID = /^sha256:[0-9a-f]{64}$/;
@@ -178,7 +184,7 @@ function containerSafe(info, s, ipc, uid, allowLegacyRestartPolicy = false) {
     !((info.HostConfig?.RestartPolicy?.Name === 'unless-stopped' && info.HostConfig.RestartPolicy.MaximumRetryCount === 0) ||
       (allowLegacyRestartPolicy && info.HostConfig?.RestartPolicy?.Name === 'no' && info.HostConfig.RestartPolicy.MaximumRetryCount === 0)) ||
     info.HostConfig?.PidsLimit !== 512 ||
-    info.HostConfig?.Memory !== 2147483648 || info.HostConfig?.MemorySwap !== 2147483648 ||
+    !memorySafe(info.HostConfig) ||
     info.HostConfig?.NanoCpus !== 2000000000 ||
     info.HostConfig?.ShmSize !== 268435456 || info.HostConfig?.AutoRemove !== false ||
     info.HostConfig?.CapDrop?.length !== 1 || info.HostConfig.CapDrop[0] !== 'ALL' || info.HostConfig?.CapAdd?.length ||
@@ -667,7 +673,7 @@ export class BrowserDockerRuntime {
     try { cid = (await this.docker(['run', '--detach', '--name', name, '--label', `${OWNER}=v1`,
       '--label', `${OWNER}.schema=${SCHEMA}`, '--label', `org.pi-computer.browser.id=${id}`,
       '--network', network, '--restart', 'unless-stopped', '--publish', '127.0.0.1::6080', '--user', `${this.uid}:${this.uid}`, '--cap-drop', 'ALL',
-      '--security-opt', 'no-new-privileges', '--read-only', '--pids-limit', '512', '--memory', '2g', '--memory-swap', '2g', '--cpus', '2', '--shm-size', '256m',
+      '--security-opt', 'no-new-privileges', '--read-only', '--pids-limit', '512', '--memory', '4g', '--memory-swap', '4g', '--cpus', '2', '--shm-size', '256m',
       '--tmpfs', `/tmp:rw,nosuid,nodev,size=128m,uid=${this.uid},gid=${this.uid},mode=700`,
       '--tmpfs', `/run/user/browser:rw,nosuid,nodev,size=32m,uid=${this.uid},gid=${this.uid},mode=700`,
       '--tmpfs', `/home/browser:rw,nosuid,nodev,size=1g,uid=${this.uid},gid=${this.uid},mode=700`,
@@ -685,6 +691,21 @@ export class BrowserDockerRuntime {
     const checked = await this.#checked(s);
     if (!checked?.info.State?.Running) throw new Error('Browser container exited during startup; stop it before retrying');
     return Object.freeze({ id, name, containerId: cid, socketPath: s.socketPath });
+  }); }
+  // Only the explicit browser-use workflow calls this after acquiring shared
+  // control. Inspection/status alone never changes an existing container.
+  async ensureResources() { return this.#locked(async () => {
+    const s = await this.#owned(); if (!s) throw new Error('No browser session');
+    await this.#localDocker();
+    const checked = await this.#checked(s);
+    if (!checked?.info.State?.Running || checked.info.State.Paused === true)
+      throw new Error('Browser is not running and unpaused');
+    if (checked.info.HostConfig.Memory === BROWSER_MEMORY) return;
+    // #checked accepts only exact 2g/2g or 4g/4g pairs and pins ownership.
+    await this.docker(['update', '--memory', '4g', '--memory-swap', '4g', s.containerId]);
+    const verified = await this.#checked(s);
+    if (!verified?.info.State?.Running || verified.info.State.Paused === true ||
+        verified.info.HostConfig.Memory !== BROWSER_MEMORY) deny();
   }); }
   async status() {
     const s = await this.#owned();

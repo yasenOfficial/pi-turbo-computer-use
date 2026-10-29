@@ -14,7 +14,7 @@ const ENTRY = "computer-use-target-v1";
 const STARTUP_WAIT_MS = 20_000;
 type Target = "host" | "docker";
 type Handle = { socketPath: string; id: string; containerId: string; name: string };
-type Runtime = Pick<BrowserDockerRuntime, "build" | "prepare" | "start" | "status" | "stop" | "viewerInfo" | "restartInput" | "migrateLegacyProfile" | "acquireControl" | "releaseControl">;
+type Runtime = Pick<BrowserDockerRuntime, "build" | "prepare" | "start" | "status" | "ensureResources" | "stop" | "viewerInfo" | "restartInput" | "migrateLegacyProfile" | "acquireControl" | "releaseControl">;
 
 /** Metadata-only viewer probe: static noVNC page AND a live RFB backend
  * through the exact localhost WebSocket proxy the viewer uses. Never requests
@@ -383,6 +383,11 @@ export class DesktopTarget {
      this.browserStage = "mutating";
      await this.migrateLegacy(ctx, check); check();
     } else if (state.status === "running" && state.authentication === "none") {
+     // Raise only the verified old cap under the shared claim, before the
+     // daemon handshake: memory pressure can make that handshake unresponsive.
+     // No input/restart/profile change; status/reload never mutate limits.
+     this.browserStage = "mutating";
+     await this.docker(ctx).ensureResources(); check();
      await this.assertNoOtherWorkflow(ctx); check();
      if (!state.imageId || !prepared.imageId || !/^sha256:[a-f0-9]{64}$/.test(state.imageId) ||
       !/^sha256:[a-f0-9]{64}$/.test(prepared.imageId))

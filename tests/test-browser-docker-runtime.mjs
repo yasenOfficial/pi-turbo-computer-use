@@ -12,7 +12,7 @@ const owner = 'org.pi-computer.browser';
 function fake() {
   const calls = [], image = { Id: IMAGE_ID, Config: { Labels: { [owner]: 'v1', [`${owner}.schema`]: 'persistent-noauth-v2' }, User: `${process.getuid()}:${process.getuid()}`, Entrypoint: ['/usr/local/bin/browser-entrypoint'] } };
   let state, network, volume, helper, missingLegacyImage = false, missingV2Image = false;
-  let missingTag = false, unsafeTag = false;
+  let missingTag = false, unsafeTag = false, updateFailure = false;
   const run = async args => {
     calls.push(args);
     if (args[0] === 'context') return JSON.stringify('unix:///var/run/docker.sock');
@@ -49,7 +49,7 @@ function fake() {
           Labels: { [owner]: 'v1', [`${owner}.schema`]: 'persistent-noauth-v2', 'org.pi-computer.browser.id': id }, Env: ['DISPLAY=:99', 'HOME=/home/browser'] },
         HostConfig: { Privileged: false, ReadonlyRootfs: true, NetworkMode: value('--network'), PidMode: '', IpcMode: 'private',
           RestartPolicy: { Name: 'unless-stopped', MaximumRetryCount: 0 },
-          PidsLimit: 512, Memory: 2147483648, MemorySwap: 2147483648, NanoCpus: 2000000000,
+          PidsLimit: 512, Memory: 4294967296, MemorySwap: 4294967296, NanoCpus: 2000000000,
           ShmSize: 268435456, AutoRemove: false,
           CapDrop: ['ALL'], CapAdd: null,
           SecurityOpt: ['no-new-privileges'], Tmpfs: { '/tmp': '', '/home/browser': '', '/run/user/browser': '' },
@@ -71,6 +71,13 @@ function fake() {
       return HELPER_ID;
     }
     if (args[0] === 'container') return JSON.stringify(args.at(-1) === HELPER_ID ? helper : state ?? null);
+    if (args[0] === 'update') {
+      assert.deepEqual(args, ['update', '--memory', '4g', '--memory-swap', '4g', CID]);
+      if (updateFailure) throw Error('synthetic update failure');
+      state.HostConfig.Memory = 4294967296;
+      state.HostConfig.MemorySwap = 4294967296;
+      return '';
+    }
     if (args[0] === 'exec') return args.at(-1) === 'restart' ? '' : 'aB3+/cZ9';
     if (args[0] === 'pause') { state.State.Paused = true; return ''; }
     if (args[0] === 'unpause') { state.State.Paused = false; return ''; }
@@ -83,7 +90,8 @@ function fake() {
     get volume() { return volume; }, set volume(value) { volume = value; }, get helper() { return helper; },
     set missingLegacyImage(value) { missingLegacyImage = value; },
     set missingV2Image(value) { missingV2Image = value; },
-    set missingTag(value) { missingTag = value; }, set unsafeTag(value) { unsafeTag = value; } };
+    set missingTag(value) { missingTag = value; }, set unsafeTag(value) { unsafeTag = value; },
+    set updateFailure(value) { updateFailure = value; } };
 }
 async function fixture(fn) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'pi-browser-test-'));
@@ -110,8 +118,8 @@ test('import is inert; explicit build, isolated run, reload, viewer and retained
   for (const flag of ['--read-only', '--cap-drop', '--security-opt', '--pids-limit', '--memory', '--cpus', '--network', '--restart', '--mount', '--publish']) assert.ok(run.includes(flag), flag);
   assert.equal(run[run.indexOf('--restart') + 1], 'unless-stopped');
   assert.equal(run[run.indexOf('--pids-limit') + 1], '512');
-  assert.equal(run[run.indexOf('--memory') + 1], '2g');
-  assert.equal(run[run.indexOf('--memory-swap') + 1], '2g');
+  assert.equal(run[run.indexOf('--memory') + 1], '4g');
+  assert.equal(run[run.indexOf('--memory-swap') + 1], '4g');
   assert.equal(run[run.indexOf('--cpus') + 1], '2');
   assert.equal(run[run.indexOf('--publish') + 1], '127.0.0.1::6080');
   assert.ok(!run.includes('--privileged') && !run.includes('--network=host'));
@@ -135,6 +143,65 @@ test('import is inert; explicit build, isolated run, reload, viewer and retained
   await reload().start();
   assert.equal(mock.calls.filter(a => a[0] === 'volume' && a[1] === 'create').length, 1);
   assert.equal(mock.calls.filter(a => a[0] === 'run').length, 2);
+}));
+test('resource upgrade is explicit, pinned, verified and idempotent without restarting Firefox', async () => fixture(async ({ runtime, reload, mock }) => {
+  await runtime.build(); await runtime.start();
+  mock.state.HostConfig.Memory = 2147483648;
+  mock.state.HostConfig.MemorySwap = 2147483648;
+  const fresh = reload();
+  assert.equal((await fresh.status()).status, 'running');
+  await fresh.viewerInfo();
+  assert.equal(mock.calls.filter(a => a[0] === 'update').length, 0);
+  assert.equal(await fresh.ensureResources(), undefined);
+  assert.equal(mock.state.HostConfig.Memory, 4294967296);
+  assert.equal(mock.state.HostConfig.MemorySwap, 4294967296);
+  await fresh.ensureResources();
+  await fresh.status();
+  assert.equal(mock.calls.filter(a => a[0] === 'update').length, 1);
+  const updateAt = mock.calls.findIndex(a => a[0] === 'update');
+  assert.ok(mock.calls.slice(0, updateAt).some(a => a[0] === 'container' && a.at(-1) === CID));
+  assert.ok(mock.calls.slice(updateAt + 1).some(a => a[0] === 'container' && a.at(-1) === CID));
+  assert.ok(!mock.calls.some(a => ['stop', 'rm', 'exec'].includes(a[0])));
+  assert.equal(mock.calls.filter(a => a[0] === 'run').length, 1);
+}));
+test('mixed or unexpected resource limits fail closed before any Docker update', async () => fixture(async ({ runtime, mock }) => {
+  await runtime.build(); await runtime.start();
+  for (const [memory, swap] of [[2147483648, 4294967296], [4294967296, 2147483648],
+    [0, 0], [8589934592, 8589934592]]) {
+    mock.state.HostConfig.Memory = memory; mock.state.HostConfig.MemorySwap = swap;
+    await assert.rejects(() => runtime.status(), /Unsafe browser/);
+    await assert.rejects(() => runtime.ensureResources(), /Unsafe browser/);
+  }
+  assert.equal(mock.calls.filter(a => a[0] === 'update').length, 0);
+}));
+test('resource update failure and uncertain post-update state fail closed without retry or restart', async () => fixture(async ({ runtime, mock }) => {
+  await runtime.build(); await runtime.start();
+  mock.state.HostConfig.Memory = 2147483648;
+  mock.state.HostConfig.MemorySwap = 2147483648;
+  mock.updateFailure = true;
+  await assert.rejects(() => runtime.ensureResources(), /synthetic update failure/);
+  assert.deepEqual([mock.state.HostConfig.Memory, mock.state.HostConfig.MemorySwap], [2147483648, 2147483648]);
+  mock.updateFailure = false;
+  const docker = runtime.docker;
+  runtime.docker = async args => {
+    const result = await docker(args);
+    if (args[0] === 'update') mock.state.HostConfig.MemorySwap = 2147483648;
+    return result;
+  };
+  await assert.rejects(() => runtime.ensureResources(), /Unsafe browser/);
+  assert.equal(mock.calls.filter(a => a[0] === 'update').length, 2);
+  assert.ok(!mock.calls.some(a => a[0] === 'stop' || a[0] === 'rm' || a[0] === 'exec'));
+}));
+test('resource upgrade requires an owned running unpaused container', async () => fixture(async ({ runtime, mock }) => {
+  await assert.rejects(() => runtime.ensureResources(), /No browser session/);
+  await runtime.build(); await runtime.start();
+  mock.state.HostConfig.Memory = 2147483648;
+  mock.state.HostConfig.MemorySwap = 2147483648;
+  mock.state.State.Running = false;
+  await assert.rejects(() => runtime.ensureResources(), /not running/);
+  mock.state.State.Running = true; mock.state.State.Paused = true;
+  await assert.rejects(() => runtime.ensureResources(), /unpaused/);
+  assert.equal(mock.calls.filter(a => a[0] === 'update').length, 0);
 }));
 test('atomic cross-chat control is idempotent for its owner and refuses foreign release', async () => fixture(async ({ runtime, reload, mock }) => {
   const a = randomUUID(), b = randomUUID();

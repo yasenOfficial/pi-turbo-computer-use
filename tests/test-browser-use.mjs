@@ -27,7 +27,7 @@ const tmp = await mkdtemp(path.join(os.tmpdir(), 'pi-browser-use-'));
 const socketPath = path.join(tmp, 'docker-owned.sock');
 const oldHostSocket = process.env.COMPUTER_USE_SOCKET;
 process.env.COMPUTER_USE_SOCKET = path.join(tmp, 'host-must-not-exist.sock');
-let daemonStopped = false, acknowledge = true, otherBusy = false, otherWorkflows = 0;
+let daemonStopped = false, acknowledge = true, otherBusy = false, otherWorkflows = 0, memoryConstrained = false;
 const received = [];
 const server = createServer(socket => {
  let buffer = '';
@@ -36,7 +36,7 @@ const server = createServer(socket => {
   const newline = buffer.indexOf('\n'); if (newline < 0) return;
   const input = JSON.parse(buffer.slice(0, newline)); received.push(input);
   if (input.cmd === 'stop') daemonStopped = true;
-  const output = input.cmd === 'daemon_info' ? { ok: true, daemon_info: {
+  const output = input.cmd === 'daemon_info' && memoryConstrained ? { ok: false } : input.cmd === 'daemon_info' ? { ok: true, daemon_info: {
    protocol_version: 1, build_id: 'a'.repeat(16), instance_id: 'b'.repeat(32), pid: 456,
    capabilities: ['atspi_direct_properties', 'verified_focus', 'launch_app'], managed: false,
    input_stopped: daemonStopped, busy: otherBusy, active_workflows: otherWorkflows,
@@ -57,7 +57,7 @@ try {
  let target;
  const workflow = new DesktopWorkflow(request => target.lease(request, ctx), 600_000);
  let state = 'absent', legacy = false, migrated = false, prepareCalls = 0, starts = 0, stops = 0, imports = 0,
-  resumes = 0, prepareGate, startGate, failPrepare = false;
+  resumes = 0, resourceChecks = 0, failResources = false, prepareGate, startGate, failPrepare = false;
  let pinnedImage = `sha256:${'a'.repeat(64)}`, runningImage = pinnedImage;
  let transientHealthFailures = 0, healthGate;
  let claimedOwner, claims = 0, releases = 0;
@@ -78,6 +78,12 @@ try {
   async stop() { assert.ok(!legacy || migrated, 'unmigrated legacy source must survive'); stops++; state = 'absent'; },
   async migrateLegacyProfile() { assert.equal(legacy, true); assert.equal(daemonStopped, true);
    imports++; migrated = true; return { message: 'private import complete' }; },
+  async ensureResources() {
+   assert.ok(claimedOwner, 'resource mutation requires the shared claim');
+   assert.equal(mode.isEnabled(), false, 'resource mutation happens only while OFF');
+   resourceChecks++; if (failResources) throw Error('Browser resource limit update was not verified');
+   memoryConstrained = false;
+  },
   async restartInput() { assert.equal(daemonStopped, true); daemonStopped = false; resumes++; },
   async viewerInfo() { return { url: 'http://127.0.0.1:6080/vnc.html', authentication: legacy ? 'legacy-password' : 'none' }; },
   async build() { throw Error('Explicit build must not be called by /browser use'); },
@@ -94,6 +100,7 @@ try {
  const browser = harness.commands.get('browser');
  assert.ok(browser); assert.deepEqual(browser.getArgumentCompletions('').map(({ value }) => value), ['use', 'use off', 'use pause']);
  assert.equal(state, 'absent'); assert.equal(prepareCalls, 0, 'loading and session start do not prepare anything');
+ assert.equal(resourceChecks, 0, 'loading/session start never changes container resources');
  // Explicit browser use may switch from an idle host-ON branch, but must
  // withdraw host desktop authorization before touching Docker lifecycle.
  mode.setEnabled(true, ctx);
@@ -108,8 +115,22 @@ try {
  assert.equal(prepareCalls, 1); assert.equal(starts, 1); assert.equal(health, 1);
  assert.equal(claimedOwner, undefined); assert.equal(claims, 1); assert.equal(releases, 1);
  assert.ok(harness.entries.some(e => e.customType === 'computer-use-target-v1' && e.data.target === 'docker'));
+ // Capacity recovery must precede daemon_info: a memory-starved daemon
+ // cannot answer the normal workflow handshake until its cap is raised.
+ memoryConstrained = true;
  await command('use'); assert.equal(starts, 1, 'repeated use reuses owned browser');
- assert.equal(prepareCalls, 2); assert.equal(health, 2);
+ assert.equal(memoryConstrained, false);
+ assert.equal(prepareCalls, 2); assert.equal(health, 2); assert.equal(resourceChecks, 1);
+ // A failed in-place capacity upgrade must not restart/replace the browser
+ // or enable input. Only another explicit use may retry it.
+ failResources = true;
+ const beforeCapacityFailure = { starts, stops, health };
+ const capacityFailure = await command('use');
+ assert.equal(capacityFailure.level, 'error'); assert.match(capacityFailure.message, /resource limit update/);
+ assert.equal(mode.isEnabled(), false); assert.equal(state, 'running');
+ assert.deepEqual({ starts, stops, health }, beforeCapacityFailure);
+ failResources = false;
+ await command('use'); assert.equal(mode.isEnabled(), true);
  idle = false;
  const off = await command('use off'); idle = true;
  assert.match(off.message, /Shared Docker browser OFF for all Pi chats.*Common private profile retained/);
@@ -222,6 +243,7 @@ try {
    return { id: 'shared-fixture', name: 'shared-fixture', containerId: `cid-${sharedId}`, socketPath }; },
   async stop() { sharedState = 'absent'; },
   async viewerInfo() { return { url: 'http://127.0.0.1:6080/vnc.html', authentication: 'none' }; },
+  async ensureResources() { assert.ok(sharedOwner, 'resource upgrade requires exclusive shared control'); },
   async restartInput() { daemonStopped = false; },
   async migrateLegacyProfile() { throw Error('No legacy fixture'); },
  };
